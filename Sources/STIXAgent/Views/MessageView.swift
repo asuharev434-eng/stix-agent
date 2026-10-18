@@ -13,10 +13,18 @@ struct MessageView: View {
     @State private var diffRecord: UndoRecord?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if message.role == "file_plan" { FilePlanCard(planID: message.text, chatID: chatID) }
+            if message.role == "feature_workflows" { WorkflowsCard(chatID:chatID) }
+            else if message.role == "workflow_form", let id=UUID(uuidString:message.text) { WorkflowFormCard(workflowID:id,chatID:chatID) }
+            else if message.role == "feature_automations" { AutomationsCard(chatID:chatID) }
+            else if message.role == "feature_documents" { DocumentsCard() }
+            else if message.role == "feature_gallery" { GalleryCard() }
+            else if message.role == "feature_resources" { ResourcesCard() }
+            else if message.role == "feature_backups" { BackupsCard(chatID:chatID) }
+            else if message.role == "file_plan" { FilePlanCard(planID: message.text, chatID: chatID) }
             else if message.role == "model_settings" { ModelSettingsCard(chatID: chatID) }
             else if message.role == "memory" { MemoryCard(chatID: chatID) }
             else if message.role == "skills" { SkillsCard() }
+            else if message.role == "plugins" { PluginsCard(chatID: chatID, initialURL: message.detail ?? "") }
             else if message.role == "chat_search" { ChatSearchCard(initialQuery: message.text) }
             else if message.role == "permissions" { PermissionsCard() }
             else if message.role == "tool" {

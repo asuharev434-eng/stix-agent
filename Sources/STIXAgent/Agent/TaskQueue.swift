@@ -24,6 +24,14 @@ struct AgentJob: Codable, Identifiable {
     var verifications: [TaskVerification]? = nil
     var imageSubmissionStarted: Bool? = nil
     var imageReplayBlocked: Bool? = nil
+    var automationEventID: String? = nil
+    var automationRuleID: UUID? = nil
+    var workflowDefinition: LocalWorkflow? = nil
+    var workflowValues: [String:JSONValue]? = nil
+    var workflowStepIndex: Int? = nil
+    var workflowStartedStep: Int? = nil
+    var imageRecipeID: UUID? = nil
+    var imageRecipeVariant: Bool? = nil
 }
 
 extension AppStore {
@@ -32,7 +40,7 @@ extension AppStore {
         save(); startNextJob()
     }
     func startNextJob() {
-        guard canPersist, !busy, let job = jobs.first(where: { $0.status == "queued" && index($0.chatID) != nil }) else { return }
+        guard canPersist, !busy, let job = jobs.first(where: { $0.status == "queued" && index($0.chatID) != nil && !($0.automationEventID != nil && resourcesSuspendBackground) }) else { return }
         busy = true; activeChatID = job.chatID; activeJobID = job.id; taskApprovals = []
         let resuming = job.inputRecorded == true
         updateJob(job.id, status: "running")
@@ -40,7 +48,12 @@ extension AppStore {
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                if !resuming && (job.prompt == "/image" || job.prompt.hasPrefix("/image ") || job.prompt.hasPrefix("/image\n")) {
+                if let workflow = job.workflowDefinition {
+                    try await self.runWorkflowJob(job, workflow: workflow)
+                } else if let recipeID = job.imageRecipeID {
+                    guard !resuming else { throw AgentError.message("Автоматический повтор изображения после прерывания запрещён. Проверьте сохранённый результат и создайте новый запрос") }
+                    try await self.replayImageRecipe(recipeID, variant: job.imageRecipeVariant == true, chatID: job.chatID)
+                } else if !resuming && (job.prompt == "/image" || job.prompt.hasPrefix("/image ") || job.prompt.hasPrefix("/image\n")) {
                     if let i = self.jobs.firstIndex(where: { $0.id == job.id }) { self.jobs[i].inputRecorded = true }; self.save()
                     guard self.canPersist else { throw AgentError.message("Не удалось сохранить начало генерации") }
                     try await self.generateImage(prompt: String(job.prompt.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines), chatID: job.chatID, attachments: job.attachments)

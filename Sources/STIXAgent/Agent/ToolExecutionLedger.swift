@@ -6,7 +6,7 @@ struct ToolExecutionLedger {
     struct Receipt { let output: String; let uncertain: Bool }
     private var receipts: [String: Receipt] = [:]
     private var reads: [String: Int] = [:]
-    private static let readsAllowed = Set(["list_files", "read_file", "search_files", "read_document", "web_search", "read_web_page", "list_tasks", "list_model_capabilities", "computer_snapshot", "show_file", "search_chats", "run_diagnostics", "recover_changes", "verify_result"])
+    private static let readsAllowed = Set(["list_files", "read_file", "search_files", "read_document", "web_search", "read_web_page", "list_tasks", "list_model_capabilities", "computer_snapshot", "show_file", "search_chats", "search_documents", "read_isolated_output", "run_diagnostics", "recover_changes", "verify_result"])
 
     static func isRead(_ call: ToolCall) -> Bool {
         if readsAllowed.contains(call.name) { return true }
@@ -14,6 +14,8 @@ struct ToolExecutionLedger {
         if call.name == "manage_memory" { return ["list", "read", "history"].contains(args["action"].string ?? "") }
         if call.name == "browser_action" { return ["tabs", "read"].contains(args["action"].string ?? "") }
         if call.name == "manage_skill" { return ["list", "read"].contains(args["action"].string ?? "") }
+        if call.name == "manage_workflow" { return ["list", "show"].contains(args["action"].string ?? "") }
+        if call.name == "manage_automation" || call.name == "manage_document_folder" || call.name == "local_backup" { return args["action"].string == "list" }
         if call.name == "http_request" { return ["GET", "HEAD"].contains((args["method"].string ?? "GET").uppercased()) }
         return false
     }

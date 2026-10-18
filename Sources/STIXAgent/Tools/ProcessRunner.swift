@@ -15,11 +15,19 @@ final class ProcessRunner: @unchecked Sendable {
         let state = RunState()
         return try await withTaskCancellationHandler(operation: {
             try await Task.detached {
-                try Self.execute(command: command, directory: directory, timeout: timeout, state: state, injectedEnvironment: environment)
+                try Self.execute(arguments: ["/bin/zsh", "-lc", command], directory: directory, timeout: timeout, state: state, injectedEnvironment: environment)
             }.value
         }, onCancel: { state.cancel() })
     }
-    private static func execute(command: String, directory: String?, timeout: TimeInterval, state: RunState, injectedEnvironment: [String: String]) throws -> ProcessResult {
+    func runExecutable(_ executable: String, arguments: [String], directory: String?, timeout: TimeInterval = 120, environment: [String:String] = [:]) async throws -> ProcessResult {
+        guard executable.hasPrefix("/"), !executable.contains("\0"), arguments.count <= 100, arguments.allSatisfy({ !$0.contains("\0") && $0.utf8.count <= 64000 }), timeout.isFinite, timeout > 0 else { throw AgentError.message("Недопустимые аргументы процесса") }
+        try CredentialEnvironment.validate(environment: environment)
+        let state = RunState()
+        return try await withTaskCancellationHandler(operation: {
+            try await Task.detached { try Self.execute(arguments: [executable] + arguments, directory: directory, timeout: timeout, state: state, injectedEnvironment: environment) }.value
+        }, onCancel: { state.cancel() })
+    }
+    private static func execute(arguments commandArguments: [String], directory: String?, timeout: TimeInterval, state: RunState, injectedEnvironment: [String: String]) throws -> ProcessResult {
         if state.cancelled { throw CancellationError() }
         var descriptors: [Int32] = [0, 0]
         guard pipe(&descriptors) == 0 else { throw POSIXError(.EIO) }
@@ -41,7 +49,7 @@ final class ProcessRunner: @unchecked Sendable {
         }
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
         posix_spawnattr_setpgroup(&attributes, 0)
-        let arguments = ["/bin/zsh", "-lc", command].map { strdup($0) }
+        let arguments = commandArguments.map { strdup($0) }
         defer { arguments.forEach { free($0) } }
         var argv = arguments + [nil]
         let safeNames: Set<String> = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "SHELL", "TERM"]
@@ -51,7 +59,7 @@ final class ProcessRunner: @unchecked Sendable {
         defer { environment.forEach { free($0) } }
         var envp = environment + [nil]
         var pid: pid_t = 0
-        let result = posix_spawn(&pid, "/bin/zsh", &actions, &attributes, &argv, &envp)
+        let result = posix_spawn(&pid, commandArguments[0], &actions, &attributes, &argv, &envp)
         guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: result) ?? .EIO) }
         close(descriptors[1])
         descriptors[1] = -1

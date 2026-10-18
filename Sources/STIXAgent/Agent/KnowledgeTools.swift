@@ -60,6 +60,8 @@ extension AppStore {
     }
     func handleKnowledgeCommand(_ text: String, chatID: UUID) -> Bool {
         let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let featureCommands = ["/workflows":"workflows", "/automations":"automations", "/documents":"documents", "/gallery":"gallery", "/resources":"resources", "/backups":"backups"]
+        if let section = featureCommands[lower] { do { try showFeature(section, chatID: chatID) } catch { self.error = error.localizedDescription }; return true }
         if ["/skills", "покажи скиллы", "мои скиллы"].contains(lower) {
             reloadSkills(); addMessage(.init(role: "skills", text: "Локальные скиллы"), to: chatID); return true
         }

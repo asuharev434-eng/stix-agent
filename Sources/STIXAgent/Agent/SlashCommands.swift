@@ -13,6 +13,12 @@ struct SlashCommandItem: Identifiable, Equatable {
 enum SlashCommands {
     static func items(plugins: [PluginConfig], canSteer: Bool, skills: [LocalSkill] = []) -> [SlashCommandItem] {
         var items: [SlashCommandItem] = [
+            .init(id:"workflows",command:"/workflows",title:"Сценарии с формами",detail:"Повторяемые задачи и параметры",icon:"slider.horizontal.3"),
+            .init(id:"automations",command:"/automations",title:"Автоматизации",detail:"Расписание и наблюдение за папками",icon:"clock.arrow.circlepath"),
+            .init(id:"documents",command:"/documents",title:"Поиск документов",detail:"Локальные папки и источники",icon:"doc.text.magnifyingglass"),
+            .init(id:"gallery",command:"/gallery",title:"Галерея результатов",detail:"Изображения, документы и код",icon:"square.grid.2x2"),
+            .init(id:"resources",command:"/resources",title:"Ресурсы Mac",detail:"Память и режим экономии",icon:"gauge.with.dots.needle.33percent"),
+            .init(id:"backups",command:"/backups",title:"Резервные копии и перенос",detail:"Данные приложения и защищённый перенос ключей",icon:"externaldrive"),
             .init(id: "doctor", command: "/doctor", title: "Проверить приложение", detail: "Сервисы, модели, права и место на диске", icon: "stethoscope"),
             .init(id: "image", command: "/image", title: "Создать или изменить картинку", detail: "Описание → локальный ComfyUI", icon: "photo", takesText: true),
             .init(id: "models", command: "/models", title: "Модели для задач", detail: "Назначить локальных специалистов", icon: "square.stack.3d.up"),

@@ -52,6 +52,13 @@ struct SkillLibrary {
         guard parsed == name else { throw AgentError.message("Имя папки и name в SKILL.md должны совпадать") }
         return content
     }
+    func workflow(_ name:String)throws->LocalWorkflow {
+        _ = try read(name)
+        let file=try StoreFiles.url("form.json",root:directory(name))
+        guard (try file.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? Int.max)<=128000 else{throw AgentError.message("Форма скилла превышает 128 КБ")}
+        var workflow=try LocalWorkflow.parse(String(contentsOf:file,encoding:.utf8))
+        workflow.skill=name;try workflow.validated();return workflow
+    }
     @discardableResult func save(name: String, content: String) throws -> URL {
         let (parsed, _) = try Self.metadata(content)
         guard parsed == name else { throw AgentError.message("Имя скилла не совпадает с name") }

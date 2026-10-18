@@ -4,6 +4,7 @@ import ApplicationServices
 
 @MainActor
 final class AppStore: ObservableObject {
+    @Published var features = FeatureConfiguration()
     @Published var jobs: [AgentJob] = []
     var activeJobID: UUID?
     @Published var chats: [Chat] = []
@@ -42,12 +43,18 @@ final class AppStore: ObservableObject {
     var undos: [UUID: UndoRecord] = [:]
     var streamedText: [UUID: String] = [:]
     var undoing: Set<UUID> = []
+    @Published var needsFeatureRelaunch = false
+    @Published var featureNotice: String?
+    var featureMonitor: Task<Void,Never>?
+    var featureMaintenanceBusy = false
+    lazy var documentIndex = LocalDocumentIndex(paths: storage.paths)
     var canPersist = true
 
     init(storage: StateStorage = StateStorage()) {
         self.storage = storage
         do {
             if let state = try storage.load() {
+                features = state.features ?? FeatureConfiguration()
                 jobs = state.jobs ?? []
                 for i in jobs.indices where ["running", "queued"].contains(jobs[i].status) { jobs[i].status = "interrupted" }
                 chats = state.chats; preferences = state.preferences; memoryEntries = state.memoryEntries ?? []; projects = state.projects ?? []; memoryRevisions = state.memoryRevisions ?? []; undos = Dictionary(uniqueKeysWithValues: state.undos.map { ($0.id, $0) })
@@ -176,6 +183,7 @@ final class AppStore: ObservableObject {
                 }
             } catch { self.error = "ComfyUI: \(error.localizedDescription)" }
         }
+        startFeatureMonitor()
         for config in preferences.plugins where config.enabled {
             do { try await activatePlugin(config) }
             catch { self.error = "Плагин \(config.name): \(vault.redact(error.localizedDescription))" }
@@ -224,11 +232,13 @@ final class AppStore: ObservableObject {
     func openDiskAccess() { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") { NSWorkspace.shared.open(url) } }
     func openScreenAccess() { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) } }
     func activatePlugin(_ config: PluginConfig) async throws {
-        if let old = plugins[config.id] { await old.close() }
         let references = preferences.pluginEnvironment?[config.id] ?? [:]
         let environment = try CredentialEnvironment.resolve(references, vault: vault)
-        let client = MCPClient(config: config, environment: environment)
-        let tools = try await client.tools()
+        let client = MCPClient(config: config, environment: environment, vault: vault)
+        let tools: [ToolDefinition]
+        do { tools = try await client.tools() }
+        catch { await client.close(); throw error }
+        if let old = plugins[config.id] { await old.close() }
         plugins[config.id] = client; pluginTools[config.id] = tools
     }
     func repairHistory(_ messages: inout [LMMessage]) {

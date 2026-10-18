@@ -22,6 +22,17 @@ struct SkillsCard: View {
                     Text(skill.description).font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button("Использовать") { store.draft = "/skill/\(skill.name) " }.disabled(!skill.enabled)
+                        if FileManager.default.fileExists(atPath:URL(fileURLWithPath:skill.path).appendingPathComponent("form.json").path){
+                            Button("Заполнить форму") {
+                                do {
+                                    var workflow=try SkillLibrary(paths:store.storage.paths).workflow(skill.name)
+                                    if let existing=store.features.workflows.first(where:{$0.skill==skill.name}){workflow.id=existing.id}
+                                    guard store.vault.redact(String(decoding:try StoreFiles.encode(workflow),as:UTF8.self))==String(decoding:try StoreFiles.encode(workflow),as:UTF8.self),let chatID=store.selectedID else{throw AgentError.message("Форма содержит секрет или чат недоступен")}
+                                    var next=store.features;next.workflows.removeAll{$0.id==workflow.id};next.workflows.append(workflow);try next.validated();store.features=next;store.save()
+                                    store.addMessage(.init(role:"workflow_form",text:workflow.id.uuidString),to:chatID)
+                                }catch{store.error=store.vault.redact(error.localizedDescription)}
+                            }.disabled(!skill.enabled)
+                        }
                         Button("Инструкция") {
                             do { source = try SkillLibrary(paths: store.storage.paths).read(skill.name); editedName = skill.name } catch { store.error = error.localizedDescription }
                         }

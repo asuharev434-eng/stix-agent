@@ -3,9 +3,14 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.servicesProvider = self
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         NSApp.windows.first?.makeKeyAndOrderFront(nil)
+    }
+    @MainActor @objc func captureSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? (pasteboard.propertyList(forType: .init("NSFilenamesPboardType")) as? [String])?.map { URL(fileURLWithPath:$0) } ?? []
+        QuickCaptureController.shared.show(text: pasteboard.string(forType:.string) ?? "", urls: Array(urls.prefix(8)))
     }
     func applicationWillTerminate(_ notification: Notification) { LocalServices.shutdown() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -16,6 +21,7 @@ struct STIXAgentApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var store: AppStore
     init() {
+        if LocalFeatureHeadless.handle(CommandLine.arguments) { exit(0) }
         if CommandLine.arguments.contains("--capabilities-json") {
             print(JSONValue.object(NativeCapabilities.status()).encoded)
             exit(0)
@@ -31,6 +37,7 @@ struct STIXAgentApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.save() }
                 .frame(minWidth: 760, minHeight: 570)
                 .task {
+                    QuickCaptureController.shared.attach(store)
                     if !store.preferences.onboardingComplete { store.showPermissions() }
                     await store.boot()
                 }
@@ -43,6 +50,7 @@ struct STIXAgentApp: App {
                 Button("Новый чат с папкой…") { store.chooseFiles(folderOnly: true, createChat: true) }.keyboardShortcut("n", modifiers: [.command, .shift])
             }
             CommandMenu("Агент") {
+                Button("Быстрый запрос · ⌃⌥Пробел") { QuickCaptureController.shared.show() }
                 Button("Остановить") { store.stop() }.keyboardShortcut(".")
                 Button("Обновить модели") { Task { await store.refreshServices() } }.keyboardShortcut("r", modifiers: [.command, .shift])
                 Button("Доступ к Mac") { store.showPermissions() }

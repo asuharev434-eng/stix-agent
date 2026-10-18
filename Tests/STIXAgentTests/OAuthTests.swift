@@ -46,6 +46,11 @@ final class OAuthTests: XCTestCase {
         XCTAssertFalse(json.contains("client_secret"))
         var changed = configuration; changed.tokenEndpoint = "https://other.example/token"
         XCTAssertNotEqual(changed.fingerprint, configuration.fingerprint)
+        changed = configuration; changed.resource = "https://service.example/mcp"; changed.issuer = "https://identity.example"
+        XCTAssertNotEqual(changed.fingerprint, configuration.fingerprint)
+        let url = try OAuthPKCE.authorizationURL(configuration: changed, state: String(repeating: "s", count: 32), verifier: String(repeating: "v", count: 43))
+        XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "resource" })?.value, changed.resource)
+        XCTAssertThrowsError(try OAuthPKCE.code(callback: URL(string: "stixagent://oauth/callback?state=ok&code=x&iss=https%3A%2F%2Fevil.example")!, expectedState: "ok", configuration: changed))
         changed = configuration; changed.scopes.append("write")
         XCTAssertNotEqual(changed.fingerprint, configuration.fingerprint)
     }

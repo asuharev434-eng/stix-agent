@@ -4,7 +4,7 @@ struct ToolOutcome { var text: String; var attachments: [Attachment] = []; var u
 
 extension AppStore {
     func allTools() -> [ToolDefinition] {
-        var list = ToolCatalog.builtins + ExtendedToolCatalog.definitions + ModelOrchestrator.definitions + ComputerTools.definitions + TaskControlTools.definitions + KnowledgeTools.definitions
+        var list = ToolCatalog.builtins + ProductivityTools.definitions + ExtendedToolCatalog.definitions + ModelOrchestrator.definitions + ComputerTools.definitions + TaskControlTools.definitions + KnowledgeTools.definitions
         if preferences.webSearchEnabled != false { list += WebSearchClient.definitions }
         for (id, tools) in pluginTools {
             for tool in tools {
@@ -48,6 +48,7 @@ extension AppStore {
         } else { throw AgentError.message("Неизвестный инструмент \(call.name)") }
         let folder = chats[i].folder ?? FileManager.default.homeDirectoryForCurrentUser.path
         let files = FileTools(paths: storage.paths)
+        if let result = try await executeProductivity(call.name, args: args, chatID: chatID) { return result }
         if let result = try await executeKnowledge(call.name, args: args, chatID: chatID) { return result }
         switch call.name {
         case "list_files": return .init(text: try await fileWork { try files.list(path: args.requiredString("path"), workingDirectory: folder) })
@@ -159,6 +160,12 @@ extension AppStore {
     }
     func applyPreference(key: String, value: String, chatID: UUID) throws -> String {
         switch key {
+        case "resource_mode":
+            guard let mode = ResourceMode(rawValue:value) else { throw AgentError.message("Режим: automatic/economy/performance") }; features.resourceMode = mode
+        case "quick_capture_enabled", "automatic_backups":
+            guard ["true","false"].contains(value) else { throw AgentError.message("Значение: true/false") }
+            if key == "quick_capture_enabled" { features.quickCaptureEnabled = value == "true"; QuickCaptureController.shared.attach(self) }
+            else { features.automaticBackups = value == "true" }
         case "theme":
             guard ["dark", "light", "system"].contains(value) else { throw AgentError.message("Тема: dark, light, system") }
             preferences.theme = value
@@ -223,6 +230,11 @@ extension AppStore {
         let url = args["url"].string ?? ""
         if transport == "http" { _ = try ApprovalPolicy.validateEndpoint(url) }
         if transport == "stdio", command.isEmpty { throw AgentError.message("Не задана команда плагина") }
+        if transport == "http", url.hasPrefix("https://"),
+           (try? await MCPAuthorizationDiscovery().discover(endpoint: url)) != nil {
+            addMessage(.init(role: "plugins", text: "MCP OAuth", detail: url), to: chatID)
+            return .init(text: "Для этого MCP нужна OAuth-авторизация. Форма подключения открыта в чате: выберите права и нажмите «Подключить через OAuth».")
+        }
         try await approve(tool: "add_plugin", arguments: args, title: "Добавить плагин \(name)?", detail: transport == "stdio" ? ([command] + arguments).joined(separator: " ") : url, chatID: chatID)
         let config = PluginConfig(id: String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)), name: name, transport: transport, command: command, arguments: arguments, url: url, enabled: true)
         try await activatePlugin(config); preferences.plugins.append(config); save()
@@ -236,8 +248,11 @@ extension AppStore {
             try await approve(tool: "enable_plugin", arguments: args, title: "Включить \(config.name)?", detail: config.transport == "stdio" ? ([config.command] + config.arguments).joined(separator: " ") : config.url, chatID: chatID)
             try await activatePlugin(config); preferences.plugins[i].enabled = true
         } else if ["disable", "remove"].contains(action) {
+            if action == "remove", preferences.plugins[i].oauth != nil { try vault.remove("mcp-oauth:" + id) }
             if let client = plugins.removeValue(forKey: id) { await client.close() }; pluginTools.removeValue(forKey: id)
-            if action == "remove" { preferences.plugins.remove(at: i) } else { preferences.plugins[i].enabled = false }
+            if action == "remove" {
+                preferences.plugins.remove(at: i)
+            } else { preferences.plugins[i].enabled = false }
         } else { throw AgentError.message("Действие: enable, disable, remove") }
         save(); return .init(text: "Плагин: \(action)")
     }

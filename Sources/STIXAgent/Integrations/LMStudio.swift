@@ -140,7 +140,8 @@ struct LMStudioClient: Sendable {
         return data
     }
 
-    func complete(model: String, messages: [LMMessage], tools: [ToolDefinition], maxOutputTokens: Int? = nil, preserveContext: Bool = false, thinking: Bool = false, onRequest: @escaping @Sendable ([LMMessage]) async -> Void = { _ in }, onReasoning: @escaping @Sendable (String) async -> Void = { _ in }, onText: @escaping @Sendable (String) async -> Void) async throws -> LMReply {
+    func complete(model: String, messages: [LMMessage], tools: [ToolDefinition], maxOutputTokens: Int? = nil, preserveContext: Bool = false, thinking: Bool = false, onPhase: @escaping @Sendable (String) async -> Void = { _ in }, onRequest: @escaping @Sendable ([LMMessage]) async -> Void = { _ in }, onReasoning: @escaping @Sendable (String) async -> Void = { _ in }, onText: @escaping @Sendable (String) async -> Void) async throws -> LMReply {
+        await onPhase("Подготовка модели: " + model)
         let liveLimit = try await ModelResidency.shared.prepare(client: self, model: model)
         var messages = messages
         let system = messages.filter { $0.role == "system" }
@@ -156,6 +157,7 @@ struct LMStudioClient: Sendable {
         let reserve = ContextWindow.estimate(limit: liveLimit, knownLimit: liveLimit != nil, system: "", tools: [], history: []).reserveTokens
         request.httpBody = try Self.requestBody(model: model, messages: messages, tools: tools, maxOutputTokens: min(maxOutputTokens ?? reserve, reserve), thinking: thinking)
         await onRequest(messages)
+        await onPhase("Обработка запроса локальной моделью…")
         let session = session()
         defer { session.invalidateAndCancel() }
         let deadline = InferenceDeadline(limits: deadlines)
@@ -178,6 +180,7 @@ struct LMStudioClient: Sendable {
             var parser = LMStreamParser()
             var line = Data()
             var total = 0
+            var generating = false
             for try await byte in bytes {
                 try Task.checkCancellation()
                 total += 1
@@ -187,7 +190,7 @@ struct LMStudioClient: Sendable {
                     line.removeAll(keepingCapacity: true)
                     let version = parser.progressVersion
                     if let text = try parser.consume(line: string) { await onText(text) }
-                    if parser.progressVersion != version { deadline.progress() }
+                    if parser.progressVersion != version { deadline.progress(); if !generating { generating = true; await onPhase("Модель формирует ответ…") } }
                     if thinking, !parser.reasoningDelta.isEmpty { await onReasoning(parser.reasoningDelta) }
                     if parser.done { break }
                 } else { line.append(byte) }

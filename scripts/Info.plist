@@ -1,23 +1,76 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>STIX Agent</string>
-<key>CFBundleDisplayName</key><string>STIX Agent</string>
-<key>CFBundleIdentifier</key><string>studio.stix.agent</string>
-<key>CFBundleExecutable</key><string>STIXAgent</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.6.0</string>
-<key>CFBundleVersion</key><string>12</string>
-<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>studio.stix.agent.oauth</string><key>CFBundleURLSchemes</key><array><string>stixagent</string></array></dict></array>
-<key>CFBundleIconFile</key><string>AppIcon</string>
-<key>LSMinimumSystemVersion</key><string>14.0</string>
-<key>NSHighResolutionCapable</key><true/>
-<key>NSMicrophoneUsageDescription</key><string>Для локальной диктовки текста в редактируемый черновик чата. Аудио не отправляется в облако.</string>
-<key>NSSpeechRecognitionUsageDescription</key><string>Для распознавания речи только на этом Mac. Результат можно проверить перед отправкой.</string>
-<key>NSAppleEventsUsageDescription</key><string>STIX Agent управляет приложениями по вашим поручениям в чате.</string>
-<key>NSDocumentsFolderUsageDescription</key><string>Для работы с файлами и папками по вашим поручениям.</string>
-<key>NSDownloadsFolderUsageDescription</key><string>Для сортировки и обработки загруженных файлов.</string>
-<key>NSDesktopFolderUsageDescription</key><string>Для работы с файлами на рабочем столе по вашим поручениям.</string>
-<key>NSLocalNetworkUsageDescription</key><string>Для подключения к локальным моделям LM Studio и ComfyUI.</string>
-<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>STIX Agent</string>
+	<key>CFBundleExecutable</key>
+	<string>STIXAgent</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>studio.stix.agent</string>
+	<key>CFBundleName</key>
+	<string>STIX Agent</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.8.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>studio.stix.agent.oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>stixagent</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>14</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>STIX Agent управляет приложениями по вашим поручениям в чате.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Для работы с файлами на рабочем столе по вашим поручениям.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Для работы с файлами и папками по вашим поручениям.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Для сортировки и обработки загруженных файлов.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Для подключения к локальным моделям LM Studio и ComfyUI.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Для локальной диктовки текста в редактируемый черновик чата. Аудио не отправляется в облако.</string>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Передать в STIX Agent</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>captureSelection</string>
+			<key>NSPortName</key>
+			<string>STIX Agent</string>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.utf8-plain-text</string>
+				<string>public.file-url</string>
+				<string>NSFilenamesPboardType</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Для распознавания речи только на этом Mac. Результат можно проверить перед отправкой.</string>
+</dict>
+</plist>

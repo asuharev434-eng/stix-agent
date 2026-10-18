@@ -40,6 +40,16 @@ actor ModelResidency {
         return (selected?["loaded_instances"].array ?? []).compactMap { $0["config"]["context_length"].int }.filter { $0 > 0 }.min()
     }
 
+    func releaseOwned(client: LMStudioClient) async throws -> Int {
+        try ModelOrchestrator.validateEndpoint(client.endpoint)
+        let snapshot = try await client.nativeModelSnapshot()
+        let owned = candidates[client.endpoint] ?? []
+        var count = 0
+        for item in snapshot["models"].array ?? [] {
+            for id in Self.instancesToRelease(item, requestedModel: "", ownedKeys: owned) { try await client.unloadNativeInstance(id); count += 1 }
+        }
+        candidates[client.endpoint] = []; return count
+    }
     static func instancesToRelease(_ item: JSONValue, requestedModel: String, ownedKeys: Set<String>) -> [String] {
         guard let key = item["key"].string, key != requestedModel, ownedKeys.contains(key), item["type"].string == "llm" else { return [] }
         return (item["loaded_instances"].array ?? []).compactMap { $0["id"].string }.filter { !$0.isEmpty && $0 != requestedModel }

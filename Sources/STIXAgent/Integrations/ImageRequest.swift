@@ -1,7 +1,7 @@
 import Foundation
 
 /// A local ComfyUI request. Paths refer to local files, never remote URLs.
-struct ImageRequest: Sendable, Equatable {
+struct ImageRequest: Sendable, Equatable, Codable {
     static let defaultNegativePrompt = "low quality, blurry, distorted, watermark"
     var prompt: String
     var inputImagePath: String?

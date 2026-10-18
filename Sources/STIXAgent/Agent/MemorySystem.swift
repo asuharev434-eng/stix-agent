@@ -25,7 +25,7 @@ enum MemoryRetrieval {
 
 extension AppStore {
     func persistedState() -> PersistedState {
-        .init(chats: chats, preferences: preferences, undos: Array(undos.values), jobs: jobs, memoryEntries: memoryEntries, projects: projects, memoryRevisions: memoryRevisions)
+        .init(chats: chats, preferences: preferences, undos: Array(undos.values), jobs: jobs, memoryEntries: memoryEntries, projects: projects, memoryRevisions: memoryRevisions, features: features)
     }
     func synchronizeProjects() throws {
         let normalized = try MemoryDocuments.normalize(persistedState())

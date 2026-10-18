@@ -11,12 +11,20 @@ struct OAuthConfiguration: Codable, Equatable {
     var clientID: String
     var scopes: [String]
     var redirectURI: String = "stixagent://oauth/callback"
+    var resource: String? = nil
+    var issuer: String? = nil
 
     func validate() throws {
         for endpoint in [authorizationEndpoint, tokenEndpoint] {
             guard let url = URL(string: endpoint), url.scheme == "https", let host = url.host, !host.isEmpty,
                   url.user == nil, url.password == nil, url.fragment == nil, url.query == nil else {
                 throw AgentError.message("OAuth требует HTTPS endpoint без query и fragment")
+            }
+        }
+        for endpoint in [resource, issuer].compactMap({ $0 }) {
+            guard let url = URL(string: endpoint), url.scheme == "https", let host = url.host, !host.isEmpty,
+                  url.user == nil, url.password == nil, url.fragment == nil, url.query == nil else {
+                throw AgentError.message("OAuth resource и issuer требуют HTTPS")
             }
         }
         guard redirectURI == "stixagent://oauth/callback", !clientID.isEmpty, clientID.utf8.count <= 1024,
@@ -34,7 +42,9 @@ struct OAuthConfiguration: Codable, Equatable {
     }
     var fingerprint: String {
         // Include the API-facing metadata in the token binding to prevent refresh-token forwarding after edits.
-        let value = [authorizationEndpoint, tokenEndpoint, clientID, redirectURI, scopes.joined(separator: " ")].joined(separator: "\n")
+        var parts = [authorizationEndpoint, tokenEndpoint, clientID, redirectURI, scopes.joined(separator: " ")]
+        if resource != nil || issuer != nil { parts += [resource ?? "", issuer ?? ""] }
+        let value = parts.joined(separator: "\n")
         return Data(SHA256.hash(data: Data(value.utf8))).base64EncodedString()
     }
 }
@@ -58,6 +68,7 @@ enum OAuthPKCE {
             .init(name: "redirect_uri", value: configuration.redirectURI), .init(name: "scope", value: configuration.scopes.joined(separator: " ")),
             .init(name: "state", value: state), .init(name: "code_challenge", value: challenge(verifier: verifier)), .init(name: "code_challenge_method", value: "S256")
         ]
+        if let resource = configuration.resource { components.queryItems?.append(.init(name: "resource", value: resource)) }
         guard let url = components.url else { throw AgentError.message("Некорректный адрес OAuth") }
         return url
     }
@@ -66,6 +77,10 @@ enum OAuthPKCE {
               parts.scheme == "stixagent", parts.host == "oauth", parts.path == "/callback", parts.port == nil,
               parts.user == nil, parts.password == nil, parts.fragment == nil else { throw AgentError.message("Некорректный OAuth callback") }
         let items = parts.queryItems ?? []
+        let issuers = items.filter { $0.name == "iss" }
+        guard issuers.count <= 1, issuers.first?.value == nil || issuers.first?.value == configuration.issuer else {
+            throw AgentError.message("OAuth issuer не совпадает")
+        }
         guard items.filter({ $0.name == "state" }).count == 1, items.first(where: { $0.name == "state" })?.value == expectedState,
               !items.contains(where: { $0.name == "error" }), items.filter({ $0.name == "code" }).count == 1,
               let code = items.first(where: { $0.name == "code" })?.value, !code.isEmpty, code.utf8.count <= 8192 else { throw AgentError.message("OAuth отклонён или state не совпадает") }
@@ -150,6 +165,7 @@ final class OAuthClient: NSObject, ASWebAuthenticationPresentationContextProvidi
         try configuration.validate()
         func encode(_ value: String) -> String { value.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"))! }
         var values = fields; values["client_id"] = configuration.clientID
+        if let resource = configuration.resource { values["resource"] = resource }
         var request = URLRequest(url: URL(string: configuration.tokenEndpoint)!, timeoutInterval: 60)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")

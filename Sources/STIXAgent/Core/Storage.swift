@@ -40,8 +40,15 @@ final class StateStorage {
         try recover()
         return try operation()
     }
-    func load() throws -> PersistedState? {
+    func createBackup(in directory: URL, automatic: Bool) throws -> BackupRecord {
         try locked {
+            let state = try SplitStore.load(root: paths.root)
+            return try LocalBackups.create(paths: paths, state: state, in: directory, automatic: automatic)
+        }
+    }
+    func load() throws -> PersistedState? {
+        try LocalBackups.recoverRestore(paths: paths)
+        return try locked {
             if FileManager.default.fileExists(atPath: paths.root.appendingPathComponent("store.json").path) {
                 let state = try SplitStore.load(root: paths.root)
                 fingerprints = try currentFingerprints(state)
@@ -94,7 +101,7 @@ final class StateStorage {
     private func currentFingerprints(_ state: PersistedState) throws -> [String:String] {
         let (_,files) = try SplitStore.files(state)
         return try Dictionary(uniqueKeysWithValues: files.keys.map { path in
-            if path == "Memory/history.jsonl", !FileManager.default.fileExists(atPath: paths.root.appendingPathComponent(path).path) { return (path, "absent") }
+            if ["Memory/history.jsonl", "Features/config.json"].contains(path), !FileManager.default.fileExists(atPath: paths.root.appendingPathComponent(path).path) { return (path, "absent") }
             return (path, try StoreFiles.digest(StoreFiles.read(path, root: paths.root)))
         })
     }

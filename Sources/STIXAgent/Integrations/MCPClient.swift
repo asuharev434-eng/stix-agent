@@ -5,6 +5,7 @@ import Darwin
 actor MCPClient {
     private let config: PluginConfig
     private let environment: [String: String]
+    private let vault: SecretVault?
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -15,6 +16,7 @@ actor MCPClient {
     private var nextID = 0
     private var writer: Task<Void, Error>?
     private var initialized = false
+    private var protocolVersion = "2025-03-26"
     private var initialization: Task<Void, Error>?
     private var sessionID: String?
     private var closed = false
@@ -22,14 +24,15 @@ actor MCPClient {
     static let maximumBytes = 4 * 1024 * 1024
     private let timeout: UInt64 = 30_000_000_000
 
-    init(config: PluginConfig, environment: [String: String] = [:]) {
+    init(config: PluginConfig, environment: [String: String] = [:], vault: SecretVault? = nil, session: URLSession? = nil) {
         self.environment = environment
         self.config = config
+        self.vault = vault
         let settings = URLSessionConfiguration.ephemeral
         settings.timeoutIntervalForRequest = 30
         settings.timeoutIntervalForResource = 30
         settings.httpShouldSetCookies = false
-        self.session = URLSession(configuration: settings)
+        self.session = session ?? URLSession(configuration: settings, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }
 
     func tools() async throws -> [ToolDefinition] {
@@ -63,6 +66,7 @@ actor MCPClient {
         initialization?.cancel()
         initialization = nil
         initialized = false
+        protocolVersion = "2025-03-26"
         writer?.cancel()
         writer = nil
         input?.closeFile()
@@ -110,8 +114,10 @@ actor MCPClient {
             "protocolVersion": .string("2025-03-26"), "capabilities": .object([:]),
             "clientInfo": .object(["name": .string("STIX Agent"), "version": .string("1.0")])
         ]))
-        guard result["protocolVersion"].string == "2025-03-26", result["capabilities"].object != nil,
+        guard let version = result["protocolVersion"].string,
+              ["2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"].contains(version), result["capabilities"].object != nil,
               result["serverInfo"].object != nil else { throw failure("Unsupported or invalid MCP initialization") }
+        protocolVersion = version
         try await notify("notifications/initialized", params: .object([:]))
         initialized = true
     }
@@ -225,15 +231,31 @@ actor MCPClient {
     private func http(_ envelope: JSONValue, id: Int?) async throws -> JSONValue {
         guard let url = URL(string: config.url), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil,
               url.user == nil, url.password == nil else { throw failure("Invalid HTTP endpoint") }
+        if config.oauth != nil, url.scheme != "https" { throw failure("OAuth MCP requires HTTPS") }
+        return try await httpAttempt(envelope, id: id, url: url, refreshed: false)
+    }
+    private func httpAttempt(_ envelope: JSONValue, id: Int?, url: URL, refreshed: Bool) async throws -> JSONValue {
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        if initialized { request.setValue("2025-03-26", forHTTPHeaderField: "MCP-Protocol-Version") }
+        if initialized { request.setValue(protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version") }
         if let sessionID = sessionID { request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id") }
+        if let oauth = config.oauth {
+            guard let vault else { throw failure("OAuth credential store unavailable") }
+            let token = try await OAuthClient.shared.accessToken(configuration: oauth, credentialID: "mcp-oauth:" + config.id, vault: vault)
+            request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = try JSONEncoder().encode(envelope)
         let (bytes, response) = try await session.bytes(for: request)
-        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else { throw failure("HTTP request failed") }
+        guard let response = response as? HTTPURLResponse, response.url == url else { throw failure("HTTP endpoint redirected") }
+        if response.statusCode == 401, let oauth = config.oauth, !refreshed, let vault {
+            _ = try await OAuthClient.shared.refresh(configuration: oauth, credentialID: "mcp-oauth:" + config.id, vault: vault)
+            return try await httpAttempt(envelope, id: id, url: url, refreshed: true)
+        }
+        if response.statusCode == 401 { throw failure("OAuth authorization expired; reconnect the plugin") }
+        if response.statusCode == 403 { throw failure("OAuth scope insufficient; reconnect the plugin with required permissions") }
+        guard (200..<300).contains(response.statusCode) else { throw failure("HTTP request failed (\(response.statusCode))") }
         if let received = response.value(forHTTPHeaderField: "Mcp-Session-Id") {
             guard received.utf8.count <= 1024, !received.contains("\r"), !received.contains("\n") else { throw failure("Invalid session header") }
             sessionID = received

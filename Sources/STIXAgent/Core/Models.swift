@@ -121,6 +121,7 @@ struct PluginConfig: Codable, Identifiable, Equatable {
     var arguments: [String]
     var url: String
     var enabled: Bool
+    var oauth: OAuthConfiguration? = nil
 }
 struct ImageWorkflowProfile: Codable, Identifiable, Equatable {
     var id: String
@@ -160,6 +161,7 @@ struct PersistedState: Codable {
     var memoryEntries: [MemoryEntry]? = nil
     var projects: [MemoryProject]? = nil
     var memoryRevisions: [MemoryRevision]? = nil
+    var features: FeatureConfiguration? = nil
 }
 
 struct PendingInteraction: Identifiable {

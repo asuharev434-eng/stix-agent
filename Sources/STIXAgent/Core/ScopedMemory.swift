@@ -92,6 +92,8 @@ enum MemoryDocuments {
     static func normalize(_ input: PersistedState) throws -> PersistedState {
         var state = input
         state.jobs = state.jobs ?? []
+        state.features = state.features ?? FeatureConfiguration()
+        try state.features?.validated()
         var projects = state.projects ?? []
         for i in state.chats.indices {
             if let folder = state.chats[i].folder {
