@@ -4,3 +4,5 @@ dist/
 .superpowers/
 *.xcuserstate
 .env
+
+.signing-identity

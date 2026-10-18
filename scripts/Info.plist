@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>STIX Agent</string>
+<key>CFBundleDisplayName</key><string>STIX Agent</string>
+<key>CFBundleIdentifier</key><string>studio.stix.agent</string>
+<key>CFBundleExecutable</key><string>STIXAgent</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSAppleEventsUsageDescription</key><string>STIX Agent управляет приложениями по вашим поручениям в чате.</string>
+<key>NSDocumentsFolderUsageDescription</key><string>Для работы с файлами и папками по вашим поручениям.</string>
+<key>NSDownloadsFolderUsageDescription</key><string>Для сортировки и обработки загруженных файлов.</string>
+<key>NSDesktopFolderUsageDescription</key><string>Для работы с файлами на рабочем столе по вашим поручениям.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Для подключения к локальным моделям LM Studio и ComfyUI.</string>
+<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+</dict></plist>
