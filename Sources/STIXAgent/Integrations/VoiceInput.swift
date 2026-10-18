@@ -17,6 +17,9 @@ final class VoiceInputController: ObservableObject {
     private var generation = UUID()
     private var tapInstalled = false
     private var onTranscript: ((String) -> Void)?
+    private let permissionBundle: Bundle
+
+    init(permissionBundle: Bundle = .main) { self.permissionBundle = permissionBundle }
 
     func start(locale: Locale = Locale(identifier: "ru-RU"), onTranscript: @escaping (String) -> Void) async {
         guard !isRecording, !isRequestingPermission else { return }
@@ -24,8 +27,8 @@ final class VoiceInputController: ObservableObject {
         let token = UUID(); generation = token
         isRequestingPermission = true
         defer { if generation == token { isRequestingPermission = false } }
-        guard Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil,
-              Bundle.main.object(forInfoDictionaryKey: "NSSpeechRecognitionUsageDescription") != nil else {
+        guard permissionBundle.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil,
+              permissionBundle.object(forInfoDictionaryKey: "NSSpeechRecognitionUsageDescription") != nil else {
             errorMessage = "Для диктовки запустите установленное приложение STIX Agent с разрешениями микрофона и распознавания речи."
             return
         }

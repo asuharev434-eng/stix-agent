@@ -2,8 +2,9 @@ import Foundation
 
 enum ExtendedToolCatalog {
     private static var imageParameters: JSONValue {
-        var schema = ToolCatalog.schema(["prompt": "string", "input_image": "string", "mask": "string", "width": "integer", "height": "integer", "steps": "integer", "seed": "integer", "cfg": "number", "denoise": "number", "negative": "string", "count": "integer", "resize_only": "boolean"], required: []).object!
+        var schema = ToolCatalog.schema(["prompt": "string", "input_image": "string", "mask": "string", "width": "integer", "height": "integer", "steps": "integer", "seed": "integer", "cfg": "number", "denoise": "number", "negative": "string", "count": "integer", "resize_only": "boolean"], required: ["prompt"]).object!
         var properties = schema["properties"]!.object!
+        properties["prompt"] = .object(["type": .string("string"), "description": .string("Required: describe the desired image or edit in text. Include prompt even with input_image=last. Only for resize_only=true, prompt may be an empty string.")])
         for key in ["width", "height"] { properties[key] = .object(["type": .string("integer"), "minimum": .number(256), "maximum": .number(2048), "multipleOf": .number(8)]) }
         properties["steps"] = .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(100)])
         properties["count"] = .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(4)])
@@ -21,7 +22,7 @@ enum ExtendedToolCatalog {
         .init(name: "apply_changes", description: "Apply a reviewed file plan after host approval. Revalidates unchanged sources/destinations. Changes have undo receipts.", parameters: ToolCatalog.schema(["plan_id": "string"], required: ["plan_id"])),
         .init(name: "manage_memory", description: "list/remember/forget stable user preferences shared across chats. Remember only when user requests it; forget by exact text, or all when explicitly requested. Never store secrets.", parameters: ToolCatalog.schema(["action": "string", "text": "string"], required: ["action"])),
         .init(name: "configure_plugin_environment", description: "Map an environment variable to an existing credential_id from protected input for a stdio MCP plugin. No secret values in args. User approval required, plugin restarted. Empty credential_id removes mapping.", parameters: ToolCatalog.schema(["plugin_id": "string", "variable": "string", "credential_id": "string"], required: ["plugin_id", "variable", "credential_id"])),
-        .init(name: "generate_image", description: "Generate or edit local ComfyUI image. For conversational edit of just-generated image set input_image='last' (same chat). Keep original. mask is an optional absolute PNG file path, never a color word; white pixels edit/black preserve. Optional resize_only true resizes without diffusion. prompt required unless resize_only. width/height 256..2048 multiples8, steps1..100, count1..4; denoise0..1. For variants input_image last + count. Image prompt direct to Comfy.", parameters: imageParameters)
+        .init(name: "generate_image", description: "Generate or edit local ComfyUI image. Always include prompt describing the desired result. For conversational edit of just-generated image set input_image='last' (same chat). Keep original. mask is an optional absolute PNG file path, never a color word; white pixels edit/black preserve. Optional resize_only true resizes without diffusion and permits an empty prompt string. width/height 256..2048 multiples8, steps1..100, count1..4; denoise0..1. For variants input_image last + count. Image prompt direct to Comfy.", parameters: imageParameters)
     ]
 }
 

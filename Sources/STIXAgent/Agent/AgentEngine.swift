@@ -243,7 +243,10 @@ extension AppStore {
                 updateTaskPhase("Генерация изображения…")
             }
             let urls = try await ComfyClient(endpoint: preferences.comfyEndpoint).generate(request: request, checkpoint: selected.hasPrefix("workflow:") ? "" : selected, outputDirectory: storage.paths.attachments, workflow: workflow, onStepProgress: { value, total in await store.updateImageStep(value, total: total) }) { progress in await store.updateActivity(progress) }
-            if LocalServices.ownsComfy { try? await ComfyClient(endpoint: preferences.comfyEndpoint).releaseModelsIfIdle() }
+            // This completed diffusion request loaded the image weights even when
+            // ComfyUI was already running. Return that memory before the next LLM
+            // turn; queue checks keep active/pending generations untouched.
+            if !request.resizeOnly { try? await ComfyClient(endpoint: preferences.comfyEndpoint).releaseModelsIfIdle() }
             editMessage(card.id, chatID: chatID) { $0.text = "Изображение готово"; $0.status = "done"; $0.attachments = urls.map { .init(path: $0.path, kind: "image") } }
         } catch { editMessage(card.id, chatID: chatID) { $0.status = "error" }; throw error }
     }

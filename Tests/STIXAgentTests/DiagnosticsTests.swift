@@ -39,8 +39,13 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertFalse(report.contains("secret-memory-text")); XCTAssertFalse(report.contains("private-prompt"))
     }
     @MainActor func testUnbundledVoiceFailsBeforeRequestingPermissions() async throws {
-        guard Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") == nil else { throw XCTSkip("Requires unbundled test executable") }
-        let voice = VoiceInputController()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".bundle")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let info = try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "studio.stix.tests.no-permissions", "CFBundlePackageType": "BNDL"], format: .xml, options: 0)
+        try info.write(to: root.appendingPathComponent("Contents/Info.plist"))
+        let bundle = try XCTUnwrap(Bundle(url: root))
+        let voice = VoiceInputController(permissionBundle: bundle)
         var emitted = false
         await voice.start { _ in emitted = true }
         XCTAssertFalse(voice.isRecording)
