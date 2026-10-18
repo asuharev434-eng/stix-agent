@@ -16,6 +16,10 @@ final class AppStore: ObservableObject {
     @Published var draft = ""
     @Published var attachments: [Attachment] = []
     @Published var busy = false
+    @Published var compactingChatID: UUID?
+    @Published var contextNotices: [UUID: String] = [:]
+    var contextAutoFailures: [UUID: String] = [:]
+    @Published var liveContextLimits: [String: Int] = [:]
     @Published var activity = ""
     @Published var reasoningText = ""
     var transientReasoning = ""

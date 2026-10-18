@@ -42,6 +42,11 @@ extension AppStore {
             preferences.theme = theme; save(); addMessage(.init(role: "assistant", text: "Тема изменена: \(theme == "dark" ? "тёмная" : theme == "light" ? "светлая" : "системная")."), to: chatID); return true
         }
         switch lower {
+        case "/compact", "сожми контекст", "сжать контекст":
+            if busy { addMessage(.init(role: "assistant", text: "Сжатие доступно после текущей задачи; автосжатие включено."), to: chatID) }
+            else if let i = index(chatID), ContextCompaction.plan(history: chats[i].history, checkpoint: chats[i].contextCheckpoint) != nil { requestContextCompaction(chatID: chatID, announce: true) }
+            else { addMessage(.init(role: "assistant", text: "Пока нечего сжимать: последние сообщения сохраняются целиком."), to: chatID) }
+            return true
         case "/permissions", "покажи системные разрешения": showPermissions(); return true
         case "/permissions reset", "отзови все постоянные разрешения":
             preferences.alwaysApprovals = []; taskApprovals = []; save(); addMessage(.init(role: "assistant", text: "Постоянные разрешения действий отозваны. Системные права отзываются в настройках macOS."), to: chatID); return true
@@ -56,7 +61,7 @@ extension AppStore {
             let text = preferences.connections.isEmpty ? "Подключений пока нет. Напишите: «Подключи API» с названием и адресом. Для ключа появится защищённая форма." : preferences.connections.map { "**\($0.name)** · \($0.baseURL)\nДокументация: `\($0.documentationPath)`" }.joined(separator: "\n\n")
             addMessage(.init(role: "assistant", text: text), to: chatID); return true
         case "/help":
-            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/image описание` — генерация через ComfyUI\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
+            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/image описание` — генерация через ComfyUI\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/compact` — сжать контекст и сохранить переписку\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
         default: return false
         }
     }
@@ -110,7 +115,7 @@ extension AppStore {
         var concludeRepeatedTool = false
         for round in 0..<preferences.maxToolRounds {
             try Task.checkCancellation()
-            guard let j = index(chatID) else { throw CancellationError() }
+            guard index(chatID) != nil else { throw CancellationError() }
             if applyPendingCorrections(chatID: chatID) { concludeRepeatedTool = false }
             updateTaskPhase(round == 0 ? "Думаю…" : "Продолжаю…")
             reasoningText = ""; transientReasoning = ""
@@ -122,8 +127,7 @@ extension AppStore {
                 let conclusion = concludeRepeatedTool ? "\nПовторный вызов инструмента остановлен. Используй сохранённые результаты; если результат неизвестен после прерывания, честно укажи необходимость проверки состояния. Дай краткий итог без инструментов, укажи фактический результат и честно назови оставшиеся невыполненные части, если они есть." : ""
                 let prompt = systemPrompt(chatID: chatID) + conclusion
                 let tools = concludeRepeatedTool ? [] : allTools()
-                let budget = try ContextBudget.historyCharacters(contextLimit: models.first { $0.id == model }?.contextLimit, system: prompt, tools: tools)
-                let history = ContextSummary.bounded(chats[j].history, maxCharacters: budget)
+                let history = try await preparedContext(chatID: chatID, model: model, system: prompt, tools: tools)
                 reply = try await LMStudioClient(endpoint: endpoint).complete(model: model, messages: [.init(role: "system", content: prompt)] + history, tools: tools, thinking: preferences.thinking ?? false, onReasoning: { token in
                     await store.receiveReasoning(token)
                 }) { token in
@@ -252,6 +256,6 @@ extension AppStore {
     }
     func repairChatHistory(_ id: UUID) { if let i = index(id) { repairHistory(&chats[i].history) } }
     func displayToolName(_ tool: String) -> String {
-        ["manage_skill": "Локальные скиллы", "show_memory": "Память", "search_chats": "Поиск по чатам", "run_diagnostics": "Диагностика", "list_files": "Просмотр папки", "read_file": "Чтение файла", "search_files": "Поиск файлов", "write_file": "Сохранение файла", "move_file": "Перемещение", "trash_file": "В Корзину", "run_shell": "Терминал", "ask_user": "Вопрос", "web_search": "Поиск DuckDuckGo", "read_web_page": "Чтение страницы", "list_tasks": "Очередь задач", "manage_task": "Управление задачей", "queue_task": "Добавление в очередь", "open_application": "Открытие приложения", "set_preference": "Настройки приложения", "preview_changes": "Предпросмотр изменений", "apply_changes": "Применение плана", "read_document": "Чтение документа", "delegate_model": "Модель-специалист", "list_model_capabilities": "Возможности моделей", "show_model_settings": "Выбор моделей для задач", "generate_image": "Редактирование / генерация", "manage_memory": "Память", "computer_snapshot": "Просмотр окна", "computer_action": "Действие в приложении", "browser_action": "Браузер", "connect_api": "Подключение API", "http_request": "Запрос к API", "request_secret": "Защищённый ввод", "add_plugin": "Подключение плагина", "present_artifact": "Артефакт", "show_file": "Файл"][tool] ?? tool
+        ["context": "Сжатие контекста", "manage_skill": "Локальные скиллы", "show_memory": "Память", "search_chats": "Поиск по чатам", "run_diagnostics": "Диагностика", "list_files": "Просмотр папки", "read_file": "Чтение файла", "search_files": "Поиск файлов", "write_file": "Сохранение файла", "move_file": "Перемещение", "trash_file": "В Корзину", "run_shell": "Терминал", "ask_user": "Вопрос", "web_search": "Поиск DuckDuckGo", "read_web_page": "Чтение страницы", "list_tasks": "Очередь задач", "manage_task": "Управление задачей", "queue_task": "Добавление в очередь", "open_application": "Открытие приложения", "set_preference": "Настройки приложения", "preview_changes": "Предпросмотр изменений", "apply_changes": "Применение плана", "read_document": "Чтение документа", "delegate_model": "Модель-специалист", "list_model_capabilities": "Возможности моделей", "show_model_settings": "Выбор моделей для задач", "generate_image": "Редактирование / генерация", "manage_memory": "Память", "computer_snapshot": "Просмотр окна", "computer_action": "Действие в приложении", "browser_action": "Браузер", "connect_api": "Подключение API", "http_request": "Запрос к API", "request_secret": "Защищённый ввод", "add_plugin": "Подключение плагина", "present_artifact": "Артефакт", "show_file": "Файл"][tool] ?? tool
     }
 }

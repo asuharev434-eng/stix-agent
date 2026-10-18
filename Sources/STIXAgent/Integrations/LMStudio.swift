@@ -52,7 +52,7 @@ struct LMStudioClient: Sendable {
             return models.map { model in
                 guard let item = entries.first(where: { $0["key"].string == model.id || ($0["loaded_instances"].array ?? []).contains(where: { $0["id"].string == model.id }) }) else { return model }
                 let loaded = (item["loaded_instances"].array ?? []).compactMap { $0["config"]["context_length"].int }.filter { $0 > 0 }.min()
-                return ModelDescriptor(id: model.id, kind: item["capabilities"]["vision"].bool == true ? "vlm" : item["type"].string, contextLimit: loaded ?? item["max_context_length"].int)
+                return ModelDescriptor(id: model.id, kind: item["capabilities"]["vision"].bool == true ? "vlm" : item["type"].string, contextLimit: loaded ?? item["max_context_length"].int, contextLimitIsLoaded: loaded != nil)
             }
         }
         try Task.checkCancellation()
@@ -105,7 +105,7 @@ struct LMStudioClient: Sendable {
         guard try JSONDecoder().decode(JSONValue.self, from: data)["instance_id"].string == id else { throw AgentError.message("Сервер не подтвердил выгрузку модели") }
     }
 
-    static func requestBody(model: String, messages: [LMMessage], tools: [ToolDefinition], thinking: Bool = false) throws -> Data {
+    static func requestBody(model: String, messages: [LMMessage], tools: [ToolDefinition], maxOutputTokens: Int? = nil, thinking: Bool = false) throws -> Data {
         guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AgentError.message("Выберите модель LM Studio") }
         let wireMessages: [JSONValue] = messages.map { message in
             var content: JSONValue = message.content.map(JSONValue.string) ?? .null
@@ -125,6 +125,10 @@ struct LMStudioClient: Sendable {
             return .object(object)
         }
         var body: [String: JSONValue] = ["model": .string(model), "messages": .array(wireMessages), "stream": .bool(true)]
+        if let maxOutputTokens {
+            guard (1...32768).contains(maxOutputTokens) else { throw AgentError.message("Некорректный резерв ответа") }
+            body["max_tokens"] = .number(Double(maxOutputTokens))
+        }
         // Qwen otherwise inherits the server's thinking default, which can produce
         // a long hidden reasoning stream even when the user has switched it off.
         if thinking || model.lowercased().contains("qwen") {
@@ -136,19 +140,21 @@ struct LMStudioClient: Sendable {
         return data
     }
 
-    func complete(model: String, messages: [LMMessage], tools: [ToolDefinition], thinking: Bool = false, onReasoning: @escaping @Sendable (String) async -> Void = { _ in }, onText: @escaping @Sendable (String) async -> Void) async throws -> LMReply {
+    func complete(model: String, messages: [LMMessage], tools: [ToolDefinition], maxOutputTokens: Int? = nil, preserveContext: Bool = false, thinking: Bool = false, onReasoning: @escaping @Sendable (String) async -> Void = { _ in }, onText: @escaping @Sendable (String) async -> Void) async throws -> LMReply {
         let liveLimit = try await ModelResidency.shared.prepare(client: self, model: model)
         var messages = messages
-        if let liveLimit {
-            let system = messages.filter { $0.role == "system" }
-            let budget = try ContextBudget.historyCharacters(contextLimit: liveLimit, system: system.compactMap(\.content).joined(separator: "\n"), tools: tools)
-            messages = system + ContextSummary.bounded(messages.filter { $0.role != "system" }, maxCharacters: budget)
+        let system = messages.filter { $0.role == "system" }
+        let original = system + ContextSummary.paired(messages.filter { $0.role != "system" })
+        messages = system + (try ContextBudget.fitted(messages.filter { $0.role != "system" }, limit: liveLimit, system: system.compactMap(\.content).joined(separator: "\n"), tools: tools))
+        if preserveContext, messages != original {
+            throw AgentError.message("Фрагмент для сжатия не помещается в окно модели")
         }
         var request = URLRequest(url: try url("/v1/chat/completions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.httpBody = try Self.requestBody(model: model, messages: messages, tools: tools, thinking: thinking)
+        let reserve = ContextWindow.estimate(limit: liveLimit, knownLimit: liveLimit != nil, system: "", tools: [], history: []).reserveTokens
+        request.httpBody = try Self.requestBody(model: model, messages: messages, tools: tools, maxOutputTokens: min(maxOutputTokens ?? reserve, reserve), thinking: thinking)
         let session = session()
         defer { session.invalidateAndCancel() }
         let deadline = InferenceDeadline(limits: deadlines)

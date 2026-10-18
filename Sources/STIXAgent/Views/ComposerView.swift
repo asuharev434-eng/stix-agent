@@ -16,7 +16,7 @@ struct ComposerView: View {
         if execute && !item.takesText { store.send() }
     }
     private var canSteer: Bool {
-        store.busy && store.activeChatID == store.selectedID && !store.pendingHere && !imageMode
+        store.busy && store.activeJobID != nil && store.activeChatID == store.selectedID && !store.pendingHere && !imageMode
     }
     private var hasText: Bool { !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var imageMode: Bool { store.draft.hasPrefix("/image") }
@@ -215,6 +215,7 @@ struct ComposerView: View {
                 }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true).padding(.horizontal, 10).padding(.vertical, 7)
                     .background(.primary.opacity(0.045), in: Capsule()).frame(maxWidth: 330, alignment: .leading).help("Модель")
                 Spacer(minLength: 5)
+                if !imageMode { ContextWindowControl() }
                 Button { store.chooseFiles() } label: { Image(systemName: "plus").font(.system(size: store.textSize(17))).frame(width: 30, height: 30).contentShape(Circle()) }.buttonStyle(.plain).help("Добавить файлы или папку").accessibilityLabel("Добавить файлы")
                 VoiceInputButton(text: $store.draft, language: store.preferences.voiceLanguage ?? "ru-RU").id(store.selectedID).disabled(store.pendingHere && store.pending?.kind == .secret)
                 Menu {

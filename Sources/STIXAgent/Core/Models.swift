@@ -45,6 +45,7 @@ struct ModelDescriptor: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var kind: String? = nil
     var contextLimit: Int? = nil
+    var contextLimitIsLoaded: Bool? = nil
     var name: String { id.split(separator: "/").last.map(String.init) ?? id }
 }
 struct ToolCall: Codable, Equatable, Sendable, Identifiable {
@@ -101,6 +102,7 @@ struct Chat: Codable, Identifiable {
     var tasksCollapsed: Bool? = nil
     var savedDraft: String? = nil
     var draftAttachments: [Attachment]? = nil
+    var contextCheckpoint: ContextCheckpoint? = nil
 }
 struct APIConnection: Codable, Identifiable, Equatable {
     var id: String

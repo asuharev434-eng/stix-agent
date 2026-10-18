@@ -15,6 +15,7 @@ enum SlashCommands {
         var items: [SlashCommandItem] = [
             .init(id: "image", command: "/image", title: "Создать или изменить картинку", detail: "Описание → локальный ComfyUI", icon: "photo", takesText: true),
             .init(id: "models", command: "/models", title: "Модели для задач", detail: "Назначить локальных специалистов", icon: "square.stack.3d.up"),
+            .init(id: "compact", command: "/compact", title: "Сжать контекст", detail: "Сохранить рабочее резюме и освободить окно модели", icon: "arrow.down.right.and.arrow.up.left"),
             .init(id: "skills", command: "/skills", title: "Скиллы", detail: "Локальные инструкции и создание скиллов", icon: "sparkles"),
             .init(id: "memory", command: "/memory", title: "Память", detail: "Просмотреть, изменить или удалить записи", icon: "brain"),
             .init(id: "search", command: "/search", title: "Поиск по чатам", detail: "Найти сообщения в локальной истории", icon: "magnifyingglass", takesText: true),
