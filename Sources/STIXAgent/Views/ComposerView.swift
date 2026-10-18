@@ -39,7 +39,7 @@ struct ComposerView: View {
     private var editor: some View {
             ZStack(alignment: .topLeading) {
                 if store.draft.isEmpty {
-                    Text(store.pendingHere && store.pending?.kind == .question ? "Ответ агенту…" : "Задача, вопрос или /image…").foregroundStyle(.tertiary).font(.system(size: 15)).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false)
+                    Text(store.pendingHere && store.pending?.kind == .question ? "Ответ агенту…" : "Задача, вопрос или /image…").foregroundStyle(.tertiary).font(.system(size: 15)).padding(.leading, 5).allowsHitTesting(false)
                 }
                 TextEditor(text: $store.draft).font(.system(size: 15)).scrollContentBackground(.hidden)
                     .frame(height: min(150, max(48, CGFloat(store.draft.components(separatedBy: "\n").count + store.draft.count / 85) * 22))).focused($focused)
