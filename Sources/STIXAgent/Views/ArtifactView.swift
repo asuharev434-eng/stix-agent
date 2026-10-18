@@ -26,7 +26,7 @@ struct ArtifactView: View {
             else if showSource { ScrollView([.horizontal, .vertical]) { Text(source).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).padding(15).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: expanded ? 650 : 400) }
             else { IsolatedArtifactWebView(source: source, mermaid: isMermaid, dark: colorScheme == .dark).frame(height: expanded ? 650 : 400) }
             HStack(spacing: 5) { Image(systemName: "lock.shield"); Text("Изолированный предпросмотр · без доступа к сети и файлам"); Spacer() }.font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.vertical, 8)
-        }.background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 13)).clipShape(RoundedRectangle(cornerRadius: 13)).overlay(RoundedRectangle(cornerRadius: 13).stroke(.primary.opacity(0.09)))
+        }.agentCard(cornerRadius: 20).clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .task(id: attachment.path) { load() }
     }
     private func load() {

@@ -25,7 +25,7 @@ struct InteractionView: View {
                 Text("Или напишите ответ в поле сообщения.").font(.system(size: 12)).foregroundStyle(.secondary)
                 Button("Отменить вопрос") { store.respond(.deny) }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
             }
-        }.padding(20).frame(maxWidth: .infinity, alignment: .leading).background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 16)).overlay(RoundedRectangle(cornerRadius: 16).stroke(.primary.opacity(0.1)))
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading).agentCard(cornerRadius: 22)
     }
     @ViewBuilder private var approvalButtons: some View {
         Button("Выполнить") { store.respond(.once) }.buttonStyle(.borderedProminent)
@@ -59,6 +59,6 @@ struct PermissionsCard: View {
                 Button("Проверить подключение") { Task { await store.boot() } }
             }.buttonStyle(.link).font(.system(size: 12))
             Text("Для управления приложениями macOS запросит Automation при первом соответствующем действии. Права администратора не запрашиваются заранее.").font(.system(size: 12)).foregroundStyle(.secondary)
-        }.padding(22).frame(maxWidth: .infinity, alignment: .leading).background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 16))
+        }.padding(22).frame(maxWidth: .infinity, alignment: .leading).agentCard(cornerRadius: 22)
     }
 }

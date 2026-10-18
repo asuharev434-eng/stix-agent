@@ -22,12 +22,12 @@ struct MessageView: View {
                         Spacer()
                         Text(["done": "Готово", "running": "Выполняется", "error": "Ошибка", "undone": "Отменено", "interrupted": "Прервано"][message.status ?? ""] ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
-                }.padding(12).background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                }.padding(16).agentCard()
             } else if message.role == "user" {
                 HStack {
                     Spacer(minLength: 45)
                     Text(message.text).font(.system(size: 14)).textSelection(.enabled).padding(.horizontal, 17).padding(.vertical, 12)
-                        .background(.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 18))
+                        .background(.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
             } else { MarkdownMessageBody(text: message.text) }
             ForEach(message.attachments) { attachment in
@@ -36,7 +36,7 @@ struct MessageView: View {
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
                         if attachment.kind == "image", let image = NSImage(contentsOfFile: attachment.path) {
-                            Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 620, maxHeight: 420).clipShape(RoundedRectangle(cornerRadius: 12)).onTapGesture { preview = URL(fileURLWithPath: attachment.path) }
+                            Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 620, maxHeight: 420).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous)).onTapGesture { preview = URL(fileURLWithPath: attachment.path) }
                         }
                         HStack(spacing: 10) {
                             Image(nsImage: NSWorkspace.shared.icon(forFile: attachment.path)).resizable().frame(width: 30, height: 30)
@@ -45,7 +45,7 @@ struct MessageView: View {
                             Button { preview = URL(fileURLWithPath: attachment.path) } label: { Image(systemName: "eye") }.help("Быстрый просмотр")
                             Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: attachment.path)]) } label: { Image(systemName: "folder") }.help("Показать в Finder")
                             Button { NSWorkspace.shared.open(URL(fileURLWithPath: attachment.path)) } label: { Image(systemName: "arrow.up.forward.square") }.help("Открыть")
-                        }.buttonStyle(.borderless).padding(11).background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 11))
+                        }.buttonStyle(.borderless).padding(14).agentCard(cornerRadius: 18)
                     }
                 }
             }
@@ -74,13 +74,13 @@ struct MarkdownMessageBody: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(blocks) { block in
                 if block.code && block.language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "mermaid" {
-                    IsolatedArtifactWebView(source: block.text, mermaid: true, dark: colorScheme == .dark).frame(height: 340).clipShape(RoundedRectangle(cornerRadius: 12))
+                    IsolatedArtifactWebView(source: block.text, mermaid: true, dark: colorScheme == .dark).frame(height: 340).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 } else if block.code {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack { Text(block.language.isEmpty ? "Код" : block.language).foregroundStyle(.secondary); Spacer(); Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(block.text, forType: .string) } label: { Label("Копировать", systemImage: "doc.on.doc") }.buttonStyle(.borderless) }.font(.system(size: 11)).padding(10)
                         Divider()
                         ScrollView(.horizontal) { Text(block.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).padding(13).frame(maxWidth: .infinity, alignment: .leading) }
-                    }.background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(.primary.opacity(0.07)))
+                    }.agentCard(cornerRadius: 18).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(block.text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
