@@ -7,11 +7,18 @@ struct AgentJob: Codable, Identifiable {
     var attachments: [Attachment] = []
     var status = "queued"
     var createdAt = Date()
+    var hidden: Bool? = nil
     var started: Bool? = nil
     var inputRecorded: Bool? = nil
     var sourceMessageID: UUID? = nil
     var undoIDs: [UUID]? = nil
     var questionsAsked: Int? = nil
+    var progress: Double? = nil
+    var phase: String? = nil
+    var completedSteps: Int? = nil
+    var startedAt: Date? = nil
+    var pendingCorrections: [String]? = nil
+    var pendingCorrectionIDs: [UUID]? = nil
 }
 
 extension AppStore {
@@ -24,12 +31,15 @@ extension AppStore {
         busy = true; activeChatID = job.chatID; activeJobID = job.id; taskApprovals = []
         let resuming = job.inputRecorded == true
         updateJob(job.id, status: "running")
-        if let i = jobs.firstIndex(where: { $0.id == job.id }) { jobs[i].started = true }; save()
+        if let i = jobs.firstIndex(where: { $0.id == job.id }) { jobs[i].started = true; jobs[i].startedAt = jobs[i].startedAt ?? Date(); jobs[i].phase = "Начинаю задачу"; jobs[i].progress = nil }; save()
         task = Task { [weak self] in
             guard let self else { return }
             do {
                 if !resuming && (job.prompt == "/image" || job.prompt.hasPrefix("/image ") || job.prompt.hasPrefix("/image\n")) {
                     try await self.generateImage(prompt: String(job.prompt.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines), chatID: job.chatID, attachments: job.attachments)
+                    if self.hasPendingCorrections(chatID: job.chatID) {
+                        try await self.runAgent(text: "Учти последующие уточнения к генерации изображения. Последняя готовая картинка доступна через generate_image input_image=last.", attachments: [], chatID: job.chatID)
+                    }
                 } else {
                     let text = resuming ? "Продолжи прерванную задачу: \(job.prompt). Часть действий уже могла выполниться. Сначала проверь текущее состояние, не повторяй побочные эффекты вслепую." : job.prompt
                     self.repairChatHistory(job.chatID)
@@ -50,7 +60,7 @@ extension AppStore {
         }
     }
     func updateJob(_ id: UUID, status: String) {
-        if let i = jobs.firstIndex(where: { $0.id == id }) { jobs[i].status = status }; save()
+        if let i = jobs.firstIndex(where: { $0.id == id }) { jobs[i].status = status; if status == "done" { jobs[i].progress = 1; jobs[i].phase = "Готово" } }; save()
     }
     func pauseTask() {
         guard let id = activeJobID else { return }; updateJob(id, status: "paused"); stop()

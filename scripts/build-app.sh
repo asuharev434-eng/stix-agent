@@ -2,8 +2,11 @@
 set -euo pipefail
 project_dir="${0:A:h:h}"
 cd "$project_dir"
-swift build -c release
-binary_dir="$(swift build -c release --show-bin-path)"
+if [[ "${STIX_USE_EXISTING_BUILD:-0}" != "1" ]]; then
+    swift build -c release
+fi
+binary_dir="$project_dir/.build/release"
+[[ -x "$binary_dir/STIXAgent" ]] || { print -u2 "Release binary missing; run without STIX_USE_EXISTING_BUILD"; exit 1; }
 app_dir="$project_dir/dist/STIX Agent.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$binary_dir/STIXAgent" "$app_dir/Contents/MacOS/STIXAgent"

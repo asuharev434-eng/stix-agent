@@ -3,6 +3,22 @@ import SwiftUI
 struct ComposerView: View {
     @EnvironmentObject var store: AppStore
     @FocusState private var focused: Bool
+    @State private var slashSelection = 0
+    @State private var slashDismissed = false
+    private var slashItems: [SlashCommandItem] {
+        guard !slashDismissed, !(store.pendingHere && store.pending?.kind == .secret) else { return [] }
+        return SlashCommands.matches(draft: store.draft, items: SlashCommands.items(plugins: store.preferences.plugins, canSteer: canSteer))
+    }
+    private func chooseSlash(_ item: SlashCommandItem, execute: Bool = true) {
+        guard item.enabled else { return }
+        store.draft = item.command + " "
+        slashDismissed = true; focused = true
+        if execute && !item.takesText { store.send() }
+    }
+    private var canSteer: Bool {
+        store.busy && store.activeChatID == store.selectedID && !store.pendingHere && !imageMode
+    }
+    private var hasText: Bool { !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var imageMode: Bool { store.draft.hasPrefix("/image") }
     var modelName: String {
         if imageMode {
@@ -13,9 +29,22 @@ struct ComposerView: View {
         return id.isEmpty ? "Выбрать модель" : id.split(separator: "/").last.map(String.init) ?? id
     }
     var body: some View {
+        composer
+            .overlay(alignment: .top) {
+                if !slashItems.isEmpty {
+                    SlashSuggestionsView(items: slashItems, selection: $slashSelection) { chooseSlash($0) }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .offset(y: -SlashSuggestionsView.height(for: slashItems.count) - 10)
+                }
+            }
+            .zIndex(10)
+            .onChange(of: store.draft) { _, _ in slashSelection = 0; slashDismissed = false }
+    }
+    private var composer: some View {
         VStack(alignment: .leading, spacing: 14) {
             attachmentsRow
             editor
+            if canSteer { steeringControl }
             if imageMode { imagePromptModelControl }
             footer
             HStack(spacing: 14) {
@@ -53,10 +82,54 @@ struct ComposerView: View {
                     .disabled(store.pendingHere && store.pending?.kind == .secret)
                     .onKeyPress(.return, phases: .down) { key in
                         if key.modifiers.contains(.shift) { return .ignored }
+                        if !slashItems.isEmpty && !key.modifiers.contains(.command) {
+                            chooseSlash(slashItems[min(slashSelection, slashItems.count - 1)]); return .handled
+                        }
+                        if key.modifiers.contains(.command), canSteer {
+                            sendCorrection()
+                            return .handled
+                        }
                         store.send()
                         return .handled
                     }
+                    .onKeyPress(.downArrow) { moveSlash(1) }
+                    .onKeyPress(.upArrow) { moveSlash(-1) }
+                    .onKeyPress(.escape) {
+                        guard !slashItems.isEmpty else { return .ignored }; slashDismissed = true; return .handled
+                    }
+                    .onKeyPress(.tab) {
+                        guard !slashItems.isEmpty else { return .ignored }
+                        chooseSlash(slashItems[min(slashSelection, slashItems.count - 1)], execute: false); return .handled
+                    }
             }
+    }
+    private func moveSlash(_ delta: Int) -> KeyPress.Result {
+        guard !slashItems.isEmpty else { return .ignored }
+        let candidates = slashItems.indices.filter { slashItems[$0].enabled }
+        guard !candidates.isEmpty else { return .handled }
+        let current = candidates.firstIndex(of: slashSelection) ?? 0
+        slashSelection = candidates[(current + delta + candidates.count) % candidates.count]
+        return .handled
+    }
+    private var steeringControl: some View {
+        HStack(spacing: 10) {
+            Label("Return — в очередь", systemImage: "list.bullet")
+                .font(.system(size: store.textSize(10))).foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Button(action: sendCorrection) {
+                Label("Уточнить текущую", systemImage: "text.bubble")
+                    .font(.system(size: store.textSize(11), weight: .medium))
+            }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                .disabled(!hasText || !store.attachments.isEmpty)
+                .help(store.attachments.isEmpty ? "Передать уточнение выполняемой задаче · ⌘Return. Агент учтёт его на следующем шаге." : "Уточнение принимает текст. Сообщение с вложениями можно добавить в очередь.")
+        }
+    }
+    private func sendCorrection() {
+        guard canSteer, hasText, store.attachments.isEmpty else { return }
+        if store.steerCurrentTask(store.draft) {
+            store.draft = ""
+            focused = true
+        }
     }
     private var imagePromptModelControl: some View {
         HStack(spacing: 9) {
@@ -148,7 +221,29 @@ struct ComposerView: View {
                 if store.busy && !(store.pendingHere && store.pending?.kind == .question) {
                     Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: store.textSize(12))).frame(width: 34, height: 34) }.buttonStyle(.plain).background(.primary.opacity(0.09), in: Circle()).help("Остановить · ⌘.").accessibilityLabel("Остановить")
                 }
-                Button { store.send() } label: { Image(systemName: "arrow.up").font(.system(size: store.textSize(15), weight: .semibold)).foregroundStyle(Color(nsColor: .textBackgroundColor)).frame(width: 34, height: 34) }.buttonStyle(.plain).background(Color.primary, in: Circle()).disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.attachments.isEmpty).help("Отправить · Return").accessibilityLabel(store.busy ? "Добавить в очередь" : "Отправить")
+                Button { store.send() } label: {
+                    Image(systemName: "arrow.up").font(.system(size: store.textSize(15), weight: .semibold))
+                }.buttonStyle(SendButtonStyle())
+                    .disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.attachments.isEmpty)
+                    .help(store.busy && !store.pendingHere ? "Добавить в очередь · Return" : "Отправить · Return")
+                    .accessibilityLabel(store.busy && !store.pendingHere ? "Добавить в очередь" : "Отправить")
             }
+    }
+}
+
+private struct SendButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+            .frame(width: 34, height: 34)
+            .background(colorScheme == .dark ? Color.white : Color.black, in: Circle())
+            .contentShape(Circle())
+            .opacity(1)
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.94 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed && isEnabled)
     }
 }

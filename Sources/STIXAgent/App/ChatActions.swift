@@ -42,7 +42,7 @@ enum ChatTranscript {
     }
 
     static func markdown(_ chat: Chat) -> String {
-        let labels = ["user": "Вы", "assistant": "STIX Agent", "tool": "Действие", "permissions": "Разрешения"]
+        let labels = ["user": "Вы", "assistant": "STIX Agent", "tool": "Действие", "permissions": "Разрешения", "model_settings": "Модели для задач"]
         let messages = chat.messages.map { message in
             let attachments = message.attachments.map { "- \($0.name): \($0.path)" }.joined(separator: "\n")
             return "## \(labels[message.role] ?? message.role)\n\n\(message.text)" + (attachments.isEmpty ? "" : "\n\nВложения:\n\(attachments)")

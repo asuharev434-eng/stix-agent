@@ -24,6 +24,17 @@ enum ComputerToolValidation {
         let compact = value.lowercased().filter { $0.isLetter || $0.isNumber }
         return ["password", "passwd", "secret", "apikey", "token", "onetimecode", "verificationcode", "creditcard", "ccnumber", "cccsv", "cccsc"].contains { compact.contains($0) }
     }
+    static func bundleID(_ value: String) throws -> String {
+        guard value.utf8.count <= 255, !value.contains(where: { $0.isWhitespace }), value.range(of: #"^[A-Za-z0-9][A-Za-z0-9-]*(\.[A-Za-z0-9][A-Za-z0-9-]*)+$"#, options: .regularExpression) != nil else { throw AgentError.message("Нужен bundle_id установленного приложения") }
+        return value
+    }
+    static func key(_ name: String, modifiers: String) throws -> (CGKeyCode, CGEventFlags) {
+        let keys: [String: CGKeyCode] = ["return": 36, "tab": 48, "space": 49, "delete": 51, "escape": 53, "left": 123, "right": 124, "down": 125, "up": 126, "home": 115, "end": 119, "pageup": 116, "pagedown": 121, "a": 0, "c": 8, "v": 9, "x": 7, "z": 6, "s": 1, "f": 3, "w": 13, "t": 17, "l": 37, "n": 45]
+        let names = modifiers.isEmpty ? [] : modifiers.split(separator: ",", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces).lowercased() }
+        let flags: [String: CGEventFlags] = ["command": .maskCommand, "shift": .maskShift, "option": .maskAlternate, "control": .maskControl]
+        guard let code = keys[name], Set(names).count == names.count, names.allSatisfy({ flags[$0] != nil }), name.count != 1 || names.contains("command") || names.contains("control") else { throw AgentError.message("Недопустимая клавиша/модификаторы; буквенные клавиши только с command/control") }
+        return (code, names.reduce(CGEventFlags()) { $0.union(flags[$1]!) })
+    }
     static func appleString(_ value: String) -> String {
         "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\r", with: "\\r").replacingOccurrences(of: "\n", with: "\\n") + "\""
@@ -33,8 +44,9 @@ enum ComputerToolValidation {
 /// One retained instance owns the most recent AX and DOM snapshots. No coordinates or arbitrary JS are accepted.
 @MainActor final class ComputerTools {
     static let definitions: [ToolDefinition] = [
+        .init(name: "open_application", description: "Launch and focus an installed macOS application using its exact bundle_id. Returns pid; take a fresh computer_snapshot before interacting.", parameters: ToolCatalog.schema(["bundle_id": "string"], required: ["bundle_id"])),
         .init(name: "computer_snapshot", description: "Read bounded accessibility tree for bundle_id (default frontmost app). Returns snapshot_id and element IDs. Optional capture: none/window/screen; PNG stays local. Requires macOS Accessibility / Screen Recording permission.", parameters: ToolCatalog.schema(["bundle_id": "string", "max_elements": "integer", "max_depth": "integer", "capture": "string"], required: [])),
-        .init(name: "computer_action", description: "Act on exact AX snapshot element. action: click/fill/scroll. snapshot_id and element_id required. fill uses text; scroll uses direction up/down/left/right. Secure fields are forbidden. Take a new snapshot after each action.", parameters: ToolCatalog.schema(["snapshot_id": "string", "element_id": "string", "action": "string", "text": "string", "direction": "string"], required: ["snapshot_id", "element_id", "action"])),
+        .init(name: "computer_action", description: "Act on exact AX snapshot element. action: click/fill/scroll/key. key uses named key and comma-separated modifiers (command/shift/option/control), requires the snapshot app to be frontmost with a non-secure focused element. Letter shortcuts require command/control. snapshot_id and element_id required. fill uses text; scroll uses direction up/down/left/right. Secure fields are forbidden. Take a new snapshot after each action.", parameters: ToolCatalog.schema(["snapshot_id": "string", "element_id": "string", "action": "string", "text": "string", "direction": "string", "key": "string", "modifiers": "string"], required: ["snapshot_id", "element_id", "action"])),
         .init(name: "browser_action", description: "Safari/Chrome browser tabs/read/open/click/fill through Apple Events. browser safari/chrome required. read needs window (1-based), tab (1-based); returns snapshot_id and element_id. open needs url and creates tab. click/fill need snapshot_id and element_id from read; fill needs text. Password/secret fields forbidden. No arbitrary JS. Browser must allow JavaScript from Apple Events for DOM actions.", parameters: ToolCatalog.schema(["browser": "string", "action": "string", "window": "integer", "tab": "integer", "url": "string", "snapshot_id": "string", "element_id": "string", "text": "string"], required: ["browser", "action"]))
     ]
     private var axSnapshot = ""
@@ -60,11 +72,39 @@ enum ComputerToolValidation {
         if let bundle = args["bundle_id"].string { app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first }
         else { app = NSWorkspace.shared.frontmostApplication }
         guard let app, !app.isTerminated else { throw AgentError.message("Приложение не запущено") }
-        let root = AXUIElementCreateApplication(app.processIdentifier)
-        AXUIElementSetMessagingTimeout(root, 1)
-        axSnapshot = UUID().uuidString; axPID = app.processIdentifier; axCreated = Date(); elements.removeAll()
-        let windows = attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
+        let pid = app.processIdentifier
+        axSnapshot = ""; elements.removeAll()
+        let worker = Task.detached(priority: .userInitiated) { try Self.captureTree(pid: pid, limit: limit, depth: depth) }
+        let tree = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+        try Task.checkCancellation()
+        axSnapshot = UUID().uuidString; axPID = pid; axCreated = Date(); elements = tree.elements
+        var result: [String: JSONValue] = ["snapshot_id": .string(axSnapshot), "bundle_id": .string(app.bundleIdentifier ?? ""), "elements": .array(tree.rows), "bounded": .bool(tree.bounded)]
+        var attachments: [Attachment] = []
+        if capture != "none" {
+            let path = try await screenshot(pid: axPID, windowOnly: capture == "window")
+            result["capture_path"] = .string(path)
+            attachments.append(.init(path: path, kind: "image"))
+        }
+        return .init(text: JSONValue.object(result).encoded, attachments: attachments)
+    }
+    private struct AXTree: @unchecked Sendable {
+        let rows: [JSONValue]
+        let elements: [String: AXUIElement]
+        let bounded: Bool
+    }
+    nonisolated private static func captureTree(pid: pid_t, limit: Int, depth: Int) throws -> AXTree {
+        let root = AXUIElementCreateApplication(pid)
         let deadline = Date().addingTimeInterval(3)
+        var exhausted = false
+        func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
+            guard !Task.isCancelled, Date() < deadline else { exhausted = true; return nil }
+            AXUIElementSetMessagingTimeout(element, Float(min(0.15, max(0.001, deadline.timeIntervalSinceNow))))
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success ? value : nil
+        }
+        func string(_ element: AXUIElement, _ key: String) -> String { attribute(element, key) as? String ?? "" }
+        let windows = attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
+        var elements: [String: AXUIElement] = [:]
         var rows: [JSONValue] = []
         var seen = Set<CFHashCode>()
         func visit(_ element: AXUIElement, _ level: Int, _ parent: String?) throws {
@@ -73,6 +113,7 @@ enum ComputerToolValidation {
             let id = "e\(rows.count + 1)"
             let role = string(element, kAXRoleAttribute), subrole = string(element, kAXSubroleAttribute)
             let title = string(element, kAXTitleAttribute), description = string(element, kAXDescriptionAttribute)
+            guard !exhausted, Date() < deadline else { exhausted = true; return }
             let secure = subrole == kAXSecureTextFieldSubrole || ComputerToolValidation.isSecret(title + " " + description + " " + string(element, kAXIdentifierAttribute))
             var row: [String: JSONValue] = ["id": .string(id), "role": .string(role), "depth": .number(Double(level)), "secure": .bool(secure)]
             if let parent { row["parent"] = .string(parent) }
@@ -85,17 +126,23 @@ enum ComputerToolValidation {
             if !secure { for child in (attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(limit) { try visit(child, level + 1, id) } }
         }
         for window in windows.prefix(20) { try visit(window, 0, nil) }
-        var result: [String: JSONValue] = ["snapshot_id": .string(axSnapshot), "bundle_id": .string(app.bundleIdentifier ?? ""), "elements": .array(rows), "bounded": .bool(rows.count >= limit || Date() >= deadline)]
-        var attachments: [Attachment] = []
-        if capture != "none" {
-            let path = try await screenshot(pid: axPID, windowOnly: capture == "window")
-            result["capture_path"] = .string(path)
-            attachments.append(.init(path: path, kind: "image"))
-        }
-        return .init(text: JSONValue.object(result).encoded, attachments: attachments)
+        try Task.checkCancellation()
+        return AXTree(rows: rows, elements: elements, bounded: exhausted || rows.count >= limit || Date() >= deadline)
     }
-    func action(_ args: JSONValue) throws -> ToolOutcome {
-        try ComputerToolValidation.validate(args, allowed: ["snapshot_id", "element_id", "action", "text", "direction"])
+    func openApplication(_ args: JSONValue) async throws -> ToolOutcome {
+        try ComputerToolValidation.validate(args, allowed: ["bundle_id"])
+        let bundle = try ComputerToolValidation.bundleID(args.requiredString("bundle_id"))
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { throw AgentError.message("Приложение не установлено: " + bundle) }
+        try Task.checkCancellation()
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        let app = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        try Task.checkCancellation()
+        axSnapshot = ""; elements.removeAll(); dom = nil
+        return .init(text: "Открыто: " + bundle + " | pid=" + String(app.processIdentifier) + ". Запросите computer_snapshot для проверки окна.")
+    }
+    func action(_ args: JSONValue) async throws -> ToolOutcome {
+        try ComputerToolValidation.validate(args, allowed: ["snapshot_id", "element_id", "action", "text", "direction", "key", "modifiers"])
         let id = try args.requiredString("snapshot_id"), elementID = try args.requiredString("element_id"), action = try args.requiredString("action")
         guard id == axSnapshot, Date().timeIntervalSince(axCreated) < 120, let element = elements[elementID],
               NSRunningApplication(processIdentifier: axPID)?.isTerminated == false else { throw AgentError.message("Снимок устарел: вызовите computer_snapshot") }
@@ -111,11 +158,35 @@ enum ComputerToolValidation {
             var settable = DarwinBoolean(false)
             guard AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue else { throw AgentError.message("Поле недоступно для записи") }
             status = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, text as CFString)
+        case "key":
+            // Clicking our approval card can temporarily focus STIX Agent. Restore
+            // only that focus transition; never steal focus from another user app.
+            if let ownID = Bundle.main.bundleIdentifier,
+               NSWorkspace.shared.frontmostApplication?.bundleIdentifier == ownID,
+               let target = NSRunningApplication(processIdentifier: axPID), !target.isTerminated {
+                target.activate()
+                try await Task.sleep(nanoseconds: 150_000_000)
+                try Task.checkCancellation()
+            }
+            guard args["text"] == .null, NSWorkspace.shared.frontmostApplication?.processIdentifier == axPID else { throw AgentError.message("Клавиши требуют активного приложения снимка; text запрещён") }
+            let (code, flags) = try ComputerToolValidation.key(args.requiredString("key"), modifiers: args["modifiers"].string ?? "")
+            let application = AXUIElementCreateApplication(axPID)
+            AXUIElementSetMessagingTimeout(application, 0.15)
+            guard let focused = attribute(application, kAXFocusedUIElementAttribute), CFGetTypeID(focused) == AXUIElementGetTypeID() else { throw AgentError.message("Не удалось проверить активное поле") }
+            let focusedElement = unsafeBitCast(focused, to: AXUIElement.self)
+            AXUIElementSetMessagingTimeout(focusedElement, 0.15)
+            let focusedIdentity = [kAXTitleAttribute, kAXDescriptionAttribute, kAXIdentifierAttribute].map { string(focusedElement, $0) }.joined(separator: " ")
+            guard attribute(focusedElement, kAXRoleAttribute) as? String != nil, string(focusedElement, kAXSubroleAttribute) != kAXSecureTextFieldSubrole, !ComputerToolValidation.isSecret(focusedIdentity) else { throw AgentError.message("Защищённое или непроверенное активное поле: клавиши запрещены") }
+            guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true), let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) else { throw AgentError.message("Не удалось создать событие клавиши") }
+            try Task.checkCancellation()
+            down.flags = flags; up.flags = flags
+            down.postToPid(axPID); up.postToPid(axPID)
+            status = .success
         case "scroll":
             let directions = ["up": "AXScrollUpByPage", "down": "AXScrollDownByPage", "left": "AXScrollLeftByPage", "right": "AXScrollRightByPage"]
             guard let direction = args["direction"].string, let name = directions[direction] else { throw AgentError.message("direction: up/down/left/right") }
             status = AXUIElementPerformAction(element, name as CFString)
-        default: throw AgentError.message("action: click/fill/scroll")
+        default: throw AgentError.message("action: click/fill/scroll/key")
         }
         axSnapshot = ""; elements.removeAll()
         guard status == .success else { throw AgentError.message("Accessibility action failed: \(status.rawValue); приложение может не поддерживать это действие") }
@@ -149,12 +220,16 @@ enum ComputerToolValidation {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return url.path
     }
-    func browserAction(_ args: JSONValue) throws -> ToolOutcome {
+    func browserAction(_ args: JSONValue) async throws -> ToolOutcome {
         try ComputerToolValidation.validate(args, allowed: ["browser", "action", "window", "tab", "url", "snapshot_id", "element_id", "text"])
         let browser = try args.requiredString("browser"), action = try args.requiredString("action")
         guard ["safari", "chrome"].contains(browser) else { throw AgentError.message("browser: safari/chrome") }
         let bundle = browser == "safari" ? "com.apple.Safari" : "com.google.Chrome"
-        guard !NSRunningApplication.runningApplications(withBundleIdentifier: bundle).isEmpty else { throw AgentError.message("Сначала запустите браузер \(browser)") }
+        if NSRunningApplication.runningApplications(withBundleIdentifier: bundle).isEmpty {
+            guard action == "open" else { throw AgentError.message("Сначала запустите браузер " + browser) }
+            _ = try ComputerToolValidation.webURL(args.requiredString("url"))
+            _ = try await openApplication(.object(["bundle_id": .string(bundle)]))
+        }
         let app = "application id " + ComputerToolValidation.appleString(bundle)
         if action == "tabs" {
             let script = """
@@ -169,20 +244,20 @@ enum ComputerToolValidation {
             end tell
             return output
             """
-            return .init(text: String(try appleEvent(script).prefix(30_000)))
+            return .init(text: String((try await appleEvent(script)).prefix(30_000)))
         }
         if action == "open" {
             let url = try ComputerToolValidation.webURL(args.requiredString("url"))
             let expression = "make new tab at end of tabs of front window with properties {URL:\(ComputerToolValidation.appleString(url))}"
             let makeWindow = browser == "safari" ? "make new document" : "make new window"
-            _ = try appleEvent("tell \(app)\nif (count of windows) is 0 then \(makeWindow)\n\(expression)\nend tell")
+            _ = try await appleEvent("tell \(app)\nif (count of windows) is 0 then \(makeWindow)\n\(expression)\nend tell")
             dom = nil
             return .init(text: "Вкладка создана: \(url). Используйте tabs/read для проверки загрузки.")
         }
         if action == "read" {
             let window = try ComputerToolValidation.boundedInt(args["window"], fallback: 1, range: 1...1000)
             let tab = try ComputerToolValidation.boundedInt(args["tab"], fallback: 1, range: 1...1000)
-            let raw = try browserJS(Self.readDOM, browser: browser, window: window, tab: tab)
+            let raw = try await browserJS(Self.readDOM, browser: browser, window: window, tab: tab)
             let result = try JSONValue.parse(raw)
             let id = UUID().uuidString
             var items: [String: JSONValue] = [:]
@@ -201,13 +276,34 @@ enum ComputerToolValidation {
         let payload: JSONValue = .object(["action": .string(action), "url": .string(snapshot.url), "item": item, "text": .string(text)])
         // Only this fixed, reviewed program can execute. Arguments are serialized as JSON, then escaped for AppleScript.
         let script = "(() => { const p = \(payload.encoded); \(Self.actDOM) })()"
-        let result = try browserJS(script, browser: browser, window: snapshot.window, tab: snapshot.tab)
+        let result = try await browserJS(script, browser: browser, window: snapshot.window, tab: snapshot.tab)
         dom = nil
         let parsed = try JSONValue.parse(result)
         guard parsed["ok"].bool == true else { throw AgentError.message(parsed["error"].string ?? "Browser action failed") }
         return .init(text: "Действие выполнено; вызовите read для проверки результата.")
     }
-    private func appleEvent(_ source: String) throws -> String {
+    private final class CancellationGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+        func check() throws { lock.lock(); let value = cancelled; lock.unlock(); if value { throw CancellationError() } }
+    }
+    nonisolated private static let appleEventsQueue = DispatchQueue(label: "studio.stix.agent.apple-events", qos: .userInitiated)
+    private func appleEvent(_ source: String) async throws -> String {
+        try Task.checkCancellation()
+        let gate = CancellationGate()
+        let result: String = try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                Self.appleEventsQueue.async {
+                    do { try gate.check(); continuation.resume(returning: try Self.sendAppleEvent(source)) }
+                    catch { continuation.resume(throwing: error) }
+                }
+            }
+        }, onCancel: { gate.cancel() })
+        try Task.checkCancellation()
+        return result
+    }
+    nonisolated private static func sendAppleEvent(_ source: String) throws -> String {
         try Task.checkCancellation()
         guard let script = NSAppleScript(source: "with timeout of 15 seconds\n" + source + "\nend timeout") else { throw AgentError.message("Ошибка подготовки Apple Event") }
         var error: NSDictionary?
@@ -215,10 +311,10 @@ enum ComputerToolValidation {
         if let error { throw AgentError.message("Apple Events: \(error[NSAppleScript.errorMessage] ?? "ошибка"). Разрешите Automation; для DOM включите Allow JavaScript from Apple Events в браузере.") }
         return result.stringValue ?? ""
     }
-    private func browserJS(_ javascript: String, browser: String, window: Int, tab: Int) throws -> String {
+    private func browserJS(_ javascript: String, browser: String, window: Int, tab: Int) async throws -> String {
         let app = browser == "safari" ? "com.apple.Safari" : "com.google.Chrome"
         let command = browser == "safari" ? "do JavaScript \(ComputerToolValidation.appleString(javascript)) in tab \(tab) of window \(window)" : "execute tab \(tab) of window \(window) javascript \(ComputerToolValidation.appleString(javascript))"
-        return try appleEvent("tell application id \(ComputerToolValidation.appleString(app))\nreturn \(command)\nend tell")
+        return try await appleEvent("tell application id \(ComputerToolValidation.appleString(app))\nreturn \(command)\nend tell")
     }
     private static let domHelpers = #"""
     const secret = e => /password|passwd|secret|apikey|token|onetimecode|verificationcode|creditcard|ccnumber|cccsc|cccsv/.test([e.type,e.id,e.name,e.autocomplete,e.getAttribute('aria-label'),e.getAttribute('placeholder')].join('').toLowerCase().replace(/[^a-z0-9]/g,''));

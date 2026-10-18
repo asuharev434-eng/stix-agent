@@ -68,12 +68,9 @@ struct ChatView: View {
                         .onChange(of: store.selectedID) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                     }
                 }
-                if store.busy, store.activeChatID == store.selectedID {
-                    if store.preferences.thinking == true && !store.reasoningText.isEmpty {
-                        reasoningCard
-                    } else {
-                        HStack(spacing: 8) { ProgressView().controlSize(.mini); Text(store.activity).font(.system(size: store.textSize(12))).foregroundStyle(.secondary); Spacer() }.frame(maxWidth: 750).padding(.horizontal, 30).padding(.bottom, 10)
-                    }
+                if store.busy, store.activeChatID == store.selectedID,
+                   store.preferences.thinking == true && !store.reasoningText.isEmpty {
+                    reasoningCard
                 }
                 TaskQueueView().frame(maxWidth: 764).padding(.horizontal, 28)
                 ComposerView().frame(maxWidth: 820).padding(.horizontal, 28).padding(.bottom, 24)
@@ -154,42 +151,5 @@ private struct SidebarChatRow: View {
                 Button("Сохранить") { store.renameChat(chat.id, title: title) }
                 Button("Отмена", role: .cancel) { }
             }
-    }
-}
-
-private struct TaskQueueView: View {
-    @EnvironmentObject var store: AppStore
-    private var jobs: [AgentJob] {
-        let current = store.jobs.filter { $0.chatID == store.selectedID }
-        let active = current.filter { ["queued", "running", "paused", "interrupted"].contains($0.status) }
-        let completed = current.filter { $0.status == "done" && !($0.undoIDs ?? []).isEmpty }.suffix(3)
-        return active + completed
-    }
-    var body: some View {
-        if !jobs.isEmpty {
-            ScrollView {
-              VStack(alignment: .leading, spacing: 9) {
-                ForEach(jobs) { job in
-                    HStack(spacing: 10) {
-                        Image(systemName: job.status == "running" ? "circle.dotted" : job.status == "queued" ? "clock" : job.status == "done" ? "checkmark.circle" : "pause.circle").foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(job.prompt.isEmpty ? "Задача с вложениями" : job.prompt).lineLimit(1)
-                            Text(["queued": "В очереди", "running": "Выполняется", "paused": "Приостановлена", "interrupted": "Прервана", "done": "Готово"][job.status] ?? job.status).foregroundStyle(.secondary).font(.system(size: store.textSize(10)))
-                        }
-                        Spacer(minLength: 3)
-                        if !(job.undoIDs ?? []).isEmpty && ["done", "paused", "interrupted"].contains(job.status) {
-                            Button { store.undoJob(job.id) } label: { Image(systemName: "arrow.uturn.backward") }.help("Отменить все изменения задачи")
-                        }
-                        if job.status == "running" {
-                            Button { store.pauseTask() } label: { Image(systemName: "pause.fill") }.help("Приостановить задачу")
-                        } else if ["paused", "interrupted"].contains(job.status) {
-                            Button { store.resumeJob(job.id) } label: { Image(systemName: "play.fill") }.help("Продолжить задачу")
-                        }
-                        if job.status != "done" { Button { store.cancelJob(job.id) } label: { Image(systemName: "xmark") }.help("Отменить задачу") }
-                    }.buttonStyle(.borderless).font(.system(size: store.textSize(12)))
-                }
-              }.padding(12)
-            }.frame(maxHeight: min(150, CGFloat(jobs.count) * 52)).agentCard(cornerRadius: 16).padding(.bottom, 10)
-        }
     }
 }

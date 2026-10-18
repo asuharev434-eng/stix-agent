@@ -214,13 +214,16 @@ struct ComfyClient: Sendable {
 
     func generate(prompt: String, checkpoint: String, outputDirectory: URL,
                   workflow template: JSONValue? = nil,
+                  onStepProgress: @escaping @Sendable (Int, Int) async -> Void = { _, _ in },
                   onProgress: @escaping @Sendable (String) async -> Void) async throws -> [URL] {
         try await generate(request: ImageRequest(prompt: prompt), checkpoint: checkpoint,
-                           outputDirectory: outputDirectory, workflow: template, onProgress: onProgress)
+                           outputDirectory: outputDirectory, workflow: template,
+                           onStepProgress: onStepProgress, onProgress: onProgress)
     }
 
     func generate(request imageRequest: ImageRequest, checkpoint: String, outputDirectory: URL,
                   workflow template: JSONValue? = nil,
+                  onStepProgress: @escaping @Sendable (Int, Int) async -> Void = { _, _ in },
                   onProgress: @escaping @Sendable (String) async -> Void) async throws -> [URL] {
         let imageRequest = try imageRequest.validated()
         guard outputDirectory.isFileURL else { throw AgentError.message("Требуется локальная папка изображений") }
@@ -250,7 +253,11 @@ struct ComfyClient: Sendable {
             workflow = try Self.workflow(request: imageRequest, checkpoint: checkpoint, uploadedImage: uploadedImage, uploadedMask: uploadedMask)
         }
         try Task.checkCancellation()
-        let submitted = try await request("prompt", body: .object(["prompt": workflow, "client_id": .string(UUID().uuidString)]))
+        let clientID = UUID().uuidString
+        let progressStream = try await ComfyProgressStream.connect(endpoint: endpoint, clientID: clientID)
+        defer { progressStream?.close() }
+        try Task.checkCancellation()
+        let submitted = try await request("prompt", body: .object(["prompt": workflow, "client_id": .string(clientID)]))
         if let errors = submitted["node_errors"].object, !errors.isEmpty {
             throw AgentError.message("ComfyUI отклонил workflow: \(String(submitted["node_errors"].encoded.prefix(2000)))")
         }
@@ -258,6 +265,10 @@ struct ComfyClient: Sendable {
             throw AgentError.message("ComfyUI отклонил задание: \(String(submitted["error"].encoded.prefix(2000)))")
         }
         let id = try submitted.requiredString("prompt_id")
+        let progressTask = Task {
+            await progressStream?.listen(promptID: id, onStepProgress: onStepProgress)
+        }
+        defer { progressTask.cancel() }
         do {
             let deadline = Date().addingTimeInterval(15 * 60)
             await onProgress("Задание принято. Генерирую изображение…")
@@ -290,6 +301,8 @@ struct ComfyClient: Sendable {
             }
             throw AgentError.message("ComfyUI превысил время ожидания 15 минут")
         } catch {
+            progressTask.cancel()
+            progressStream?.close()
             // Cleanup must survive cancellation of the caller, and only target this prompt.
             let cleanupError = await Task.detached { () -> String? in
                 do { try await cancelOwnedPrompt(id); return nil }

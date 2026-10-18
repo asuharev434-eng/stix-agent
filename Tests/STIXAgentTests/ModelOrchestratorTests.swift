@@ -4,6 +4,15 @@ import XCTest
 final class ModelOrchestratorTests: XCTestCase {
     private let installed = [ModelDescriptor(id: "main"), ModelDescriptor(id: "local-coder"), ModelDescriptor(id: "local-vl")]
 
+    func testTypedVisionPathsChooseAssignedVisionWithoutChangingRouting() throws {
+        let args: JSONValue = .object(["task": .string("Describe"), "reason": .string("Vision"), "image_paths": .array([.string("/tmp/photo.png")])])
+        let result = try ModelOrchestrator.request(args, installed: installed, assignments: ["vision": "local-vl", "general": "main"])
+        XCTAssertEqual(result.model, "local-vl"); XCTAssertEqual(result.imagePaths, ["/tmp/photo.png"])
+        var invalid = args.object!; invalid["image_paths_json"] = .string("[]")
+        XCTAssertThrowsError(try ModelOrchestrator.request(.object(invalid), installed: installed, assignments: ["vision": "local-vl"]))
+        XCTAssertFalse(ModelOrchestrator.definitions.contains { $0.name == "configure_model_role" })
+    }
+
     func testDelegationHasNoToolsOrConversationHistory() throws {
         let request = try ModelOrchestrator.request(.object(["role": .string("coding"), "task": .string("Review this function"), "reason": .string("Need coding specialist")]), installed: installed, assignments: ["coding": "local-coder"])
         let body = try LMStudioClient.requestBody(model: request.model, messages: request.messages(), tools: [])

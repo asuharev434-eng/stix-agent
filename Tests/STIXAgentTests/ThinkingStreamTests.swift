@@ -65,5 +65,7 @@ final class ThinkingStreamTests: XCTestCase {
         XCTAssertEqual(normal["chat_template_kwargs"], .null)
         let thinking = try JSONDecoder().decode(JSONValue.self, from: LMStudioClient.requestBody(model: "local", messages: [], tools: [], thinking: true))
         XCTAssertEqual(thinking["chat_template_kwargs"]["enable_thinking"].bool, true)
+        let qwen = try JSONDecoder().decode(JSONValue.self, from: LMStudioClient.requestBody(model: "qwen3-8b-abliterated", messages: [], tools: []))
+        XCTAssertEqual(qwen["chat_template_kwargs"]["enable_thinking"].bool, false)
     }
 }

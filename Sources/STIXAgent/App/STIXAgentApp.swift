@@ -15,6 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct STIXAgentApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var store = AppStore()
+    init() {
+        if CommandLine.arguments.contains("--capabilities-json") {
+            print(JSONValue.object(NativeCapabilities.status()).encoded)
+            exit(0)
+        }
+    }
     var body: some Scene {
         WindowGroup {
             ChatView().environmentObject(store).preferredColorScheme(store.colorScheme)

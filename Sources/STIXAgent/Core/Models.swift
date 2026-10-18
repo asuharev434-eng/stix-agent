@@ -43,6 +43,8 @@ enum AgentError: LocalizedError {
 struct ActionDenied: LocalizedError { var errorDescription: String? { "Действие отменено пользователем." } }
 struct ModelDescriptor: Identifiable, Codable, Hashable, Sendable {
     let id: String
+    var kind: String? = nil
+    var contextLimit: Int? = nil
     var name: String { id.split(separator: "/").last.map(String.init) ?? id }
 }
 struct ToolCall: Codable, Equatable, Sendable, Identifiable {
@@ -96,6 +98,7 @@ struct Chat: Codable, Identifiable {
     var updatedAt = Date()
     var pinned: Bool? = nil
     var questionLevel: Int? = nil
+    var tasksCollapsed: Bool? = nil
 }
 struct APIConnection: Codable, Identifiable, Equatable {
     var id: String
@@ -132,6 +135,7 @@ struct AppPreferences: Codable {
     var maxToolRounds = 40
     var imageProfiles: [ImageWorkflowProfile] = []
     var secrets: [SecretReference] = []
+    var webSearchEnabled: Bool? = nil
     var thinking: Bool? = nil
     var questionLevel: Int? = nil
     var fontSize: Double? = nil

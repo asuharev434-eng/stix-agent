@@ -11,7 +11,8 @@ struct MessageView: View {
     @State private var editedText = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if message.role == "permissions" { PermissionsCard() }
+            if message.role == "model_settings" { ModelSettingsCard(chatID: chatID) }
+            else if message.role == "permissions" { PermissionsCard() }
             else if message.role == "tool" {
                 DisclosureGroup {
                     if let detail = message.detail { Text(detail).font(.system(size: store.textSize(11), design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled).padding(.vertical, 6) }

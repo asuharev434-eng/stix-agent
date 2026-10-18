@@ -4,7 +4,8 @@ struct ToolOutcome { var text: String; var attachments: [Attachment] = []; var u
 
 extension AppStore {
     func allTools() -> [ToolDefinition] {
-        var list = ToolCatalog.builtins + ExtendedToolCatalog.definitions + ModelOrchestrator.definitions + ComputerTools.definitions
+        var list = ToolCatalog.builtins + ExtendedToolCatalog.definitions + ModelOrchestrator.definitions + ComputerTools.definitions + TaskControlTools.definitions
+        if preferences.webSearchEnabled != false { list += WebSearchClient.definitions }
         for (id, tools) in pluginTools {
             for tool in tools {
                 list.append(.init(name: ApprovalPolicy.pluginToolName(pluginID: id, name: tool.name), description: "MCP \(tool.name): \(tool.description)", parameters: tool.parameters))
@@ -159,6 +160,8 @@ extension AppStore {
         case "default_model":
             guard models.contains(where: { $0.id == value }) else { throw AgentError.message("Модель не найдена в LM Studio") }
             preferences.defaultModel = value; if let i = index(chatID) { chats[i].model = value }
+        case "web_search_enabled":
+            guard ["true", "false"].contains(value) else { throw AgentError.message("web_search_enabled: true/false") }; preferences.webSearchEnabled = value == "true"
         case "image_prompt_language":
             guard ["auto", "en", "ru", "zh", "ja"].contains(value) else { throw AgentError.message("Язык промпта: auto/en/ru/zh/ja") }; if let i = index(chatID) { chats[i].imagePromptLanguage = value }
         case "font_size":

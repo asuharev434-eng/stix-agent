@@ -44,9 +44,23 @@ struct LMStudioClient: Sendable {
         try Self.validate(response, body: data)
         let json = try JSONDecoder().decode(JSONValue.self, from: data)
         guard let entries = json["data"].array else { throw AgentError.message("LM Studio: неверный формат списка моделей") }
-        return Array(Set(entries.compactMap { entry -> String? in
+        let models = Array(Set(entries.compactMap { entry -> String? in
             guard let id = entry["id"].string, !id.isEmpty, !id.lowercased().contains("embed") else { return nil }; return id
         })).sorted().map { ModelDescriptor(id: $0) }
+        // Optional metadata from LM Studio's local REST API; OpenAI-only servers still work.
+        do {
+            var metadataRequest = URLRequest(url: try url("/api/v0/models")); metadataRequest.timeoutInterval = 4
+            let (bytes, response) = try await session.bytes(for: metadataRequest)
+            var data = Data()
+            for try await byte in bytes { try Task.checkCancellation(); guard data.count < 2_000_000 else { throw AgentError.message("Слишком много метаданных моделей") }; data.append(byte) }
+            try Self.validate(response, body: data)
+            let metadata = try JSONDecoder().decode(JSONValue.self, from: data)["data"].array ?? []
+            return models.map { model in
+                guard let item = metadata.first(where: { $0["id"].string == model.id }) else { return model }
+                return ModelDescriptor(id: model.id, kind: item["type"].string, contextLimit: item["max_context_length"].int)
+            }
+        } catch { if Task.isCancelled { throw CancellationError() }; return models }
+
     }
 
     static func requestBody(model: String, messages: [LMMessage], tools: [ToolDefinition], thinking: Bool = false) throws -> Data {
@@ -69,7 +83,11 @@ struct LMStudioClient: Sendable {
             return .object(object)
         }
         var body: [String: JSONValue] = ["model": .string(model), "messages": .array(wireMessages), "stream": .bool(true)]
-        if thinking { body["chat_template_kwargs"] = .object(["enable_thinking": .bool(true)]) }
+        // Qwen otherwise inherits the server's thinking default, which can produce
+        // a long hidden reasoning stream even when the user has switched it off.
+        if thinking || model.lowercased().contains("qwen") {
+            body["chat_template_kwargs"] = .object(["enable_thinking": .bool(thinking)])
+        }
         if !tools.isEmpty { body["tools"] = .array(tools.map(\.wire)); body["tool_choice"] = .string("auto") }
         let data = try JSONEncoder().encode(JSONValue.object(body))
         guard data.count <= 16_000_000 else { throw AgentError.message("Контекст слишком большой для LM Studio") }

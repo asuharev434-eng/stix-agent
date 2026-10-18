@@ -6,11 +6,29 @@ enum ModelOrchestrator {
         let lower = id.lowercased()
         return ["vision", "-vl", "llava", "qwen3.5", "gemma-4"].contains(where: lower.contains)
     }
+    static func effectiveAssignments(installed: [ModelDescriptor], configured: [String: String]) -> [String: String] {
+        var result = configured.filter { entry in installed.contains { $0.id == entry.value } }
+        let vision = installed.first { $0.kind == "vlm" && $0.id.lowercased().contains("qwen3.5-9b") } ?? installed.first { $0.kind == "vlm" } ?? installed.first { inferredVision($0.id) }
+        let compact = installed.first { $0.id.lowercased().contains("qwen3.5-9b") }
+        let coder = installed.first { let id = $0.id.lowercased(); return id.contains("coder") && !["30b", "32b", "70b"].contains(where: id.contains) }
+        let general = compact ?? installed.first { !$0.id.lowercased().contains("30b") }
+        for (role, model) in [("vision", vision), ("coding", coder ?? compact ?? general), ("reasoning", compact ?? general), ("writing", general), ("general", general)] {
+            if result[role] == nil, let model { result[role] = model.id }
+        }
+        return result
+    }
     static let roles = ["coding", "reasoning", "vision", "writing", "general"]
+    private static var delegateParameters: JSONValue {
+        var schema = ToolCatalog.schema(["role": "string", "model_id": "string", "task": "string", "reason": "string", "image_paths": "array", "image_paths_json": "string"], required: ["task", "reason"]).object!
+        var properties = schema["properties"]!.object!
+        properties["image_paths"] = .object(["type": .string("array"), "items": .object(["type": .string("string")]), "maxItems": .number(4)])
+        schema["properties"] = .object(properties)
+        return .object(schema)
+    }
     static let definitions: [ToolDefinition] = [
+        .init(name: "show_model_settings", description: "Show an interactive inline chat form to choose local specialist models by task and image/prompt models. Use when user asks to configure models, not to run a task. Does not change any setting itself.", parameters: ToolCatalog.schema([:], required: [])),
         .init(name: "list_model_capabilities", description: "List available local models and specialist role assignments. Name-based capabilities are explicitly inferred, not verified.", parameters: ToolCatalog.schema([:], required: [])),
-        .init(name: "configure_model_role", description: "Assign an available local model to coding/reasoning/vision/writing/general. Only configure when the user requests this preference; does not change the main selected model.", parameters: ToolCatalog.schema(["role": "string", "model_id": "string"], required: ["role", "model_id"])),
-        .init(name: "delegate_model", description: "Ask an available local specialist for bounded advice when the selected main model is unsuitable. Main model reviews the answer and remains selected. Specialist has no tools and cannot delegate. Supply role or exact model_id, task and reason. Optional image_paths_json is a JSON array of up to 4 local image paths for vision.", parameters: ToolCatalog.schema(["role": "string", "model_id": "string", "task": "string", "reason": "string", "image_paths_json": "string"], required: ["task", "reason"]))
+        .init(name: "delegate_model", description: "Ask an available local specialist for bounded advice when the selected main model is unsuitable. Main model reviews the answer and remains selected. Specialist has no tools and cannot delegate. Supply role or exact model_id, task and reason. For vision pass image_paths as an array of up to 4 local image paths. Legacy image_paths_json string is also accepted. With image paths and no model_id/role, vision is selected automatically.", parameters: delegateParameters)
     ]
 
     struct Request: Sendable {
@@ -28,14 +46,22 @@ enum ModelOrchestrator {
         let task = try args.requiredString("task")
         let reason = try args.requiredString("reason")
         guard task.count <= 16000, reason.count <= 1000 else { throw AgentError.message("Задание специалисту слишком длинное") }
-        let role = args["role"].string
+        let hasImages = args["image_paths"].array?.isEmpty == false || args["image_paths_json"].string?.isEmpty == false
+        let role = args["role"].string ?? (args["model_id"].string == nil ? (hasImages ? "vision" : "general") : nil)
         if let role, !roles.contains(role) { throw AgentError.message("Неизвестная роль модели: \(role)") }
         let model = args["model_id"].string ?? role.flatMap { assignments[$0] }
-        guard let model, installed.contains(where: { $0.id == model }) else { throw AgentError.message("Укажите доступную локальную модель model_id или настройте роль через configure_model_role") }
+        guard let model, installed.contains(where: { $0.id == model }) else { throw AgentError.message("Укажите доступную локальную модель model_id или выберите назначение в форме /models") }
         if let role, let explicit = args["model_id"].string, let configured = assignments[role], explicit != configured {
             throw AgentError.message("model_id не совпадает с моделью, назначенной роли \(role)")
         }
         var paths: [String] = []
+        if args["image_paths"] != .null {
+            guard args["image_paths_json"] == .null, let array = args["image_paths"].array,
+                  array.count <= 4, array.allSatisfy({ $0.string?.isEmpty == false && ($0.string?.utf8.count ?? 0) <= 4096 }) else {
+                throw AgentError.message("image_paths: массив до 4 путей, не передавайте одновременно image_paths_json")
+            }
+            paths = array.compactMap(\.string)
+        }
         if let raw = args["image_paths_json"].string {
             guard raw.utf8.count <= 16384, let array = try JSONValue.parse(raw).array, array.count <= 4,
                   array.allSatisfy({ $0.string?.isEmpty == false }) else { throw AgentError.message("image_paths_json: ожидается массив до 4 путей изображений") }
@@ -61,7 +87,7 @@ enum ModelOrchestrator {
             if lower.contains("coder") || lower.contains("coding") { inferred.append("coding") }
             if lower.contains("reason") || lower.contains("deepseek-r1") || lower.contains("qwq") { inferred.append("reasoning") }
             if inferredVision(model.id) { inferred.append("vision") }
-            return "\(model.id) | назначено: \(assigned.isEmpty ? "нет" : assigned.joined(separator: ", ")) | по имени (не проверено): \(inferred.isEmpty ? "неизвестно" : inferred.joined(separator: ", "))"
+            return "\(model.id) | назначено: \(assigned.isEmpty ? "нет" : assigned.joined(separator: ", ")) | API тип: \(model.kind ?? "неизвестно") | по имени (не проверено): \(inferred.isEmpty ? "неизвестно" : inferred.joined(separator: ", "))"
         }.joined(separator: "\n")
     }
 }
@@ -71,22 +97,27 @@ extension AppStore {
         let role = try args.requiredString("role")
         let model = try args.requiredString("model_id")
         guard ModelOrchestrator.roles.contains(role) else { throw AgentError.message("Роль: \(ModelOrchestrator.roles.joined(separator: ", "))") }
-        guard models.contains(where: { $0.id == model }) else { throw AgentError.message("Модель отсутствует в текущем списке LM Studio") }
+        guard model == "auto" || models.contains(where: { $0.id == model }) else { throw AgentError.message("Модель отсутствует в текущем списке LM Studio") }
         var assignments = preferences.modelRoles ?? [:]
-        assignments[role] = model; preferences.modelRoles = assignments; save()
+        if model == "auto" { assignments.removeValue(forKey: role) } else { assignments[role] = model }; preferences.modelRoles = assignments; save()
         return .init(text: "Роль \(role): \(model). Основная модель чата сохранена.")
     }
 
     func delegateModel(_ args: JSONValue, chatID: UUID) async throws -> ToolOutcome {
         guard let i = index(chatID) else { throw CancellationError() }
         try ModelOrchestrator.validateEndpoint(preferences.lmEndpoint)
-        let request = try ModelOrchestrator.request(args, installed: models, assignments: preferences.modelRoles ?? [:])
+        let request = try ModelOrchestrator.request(args, installed: models, assignments: ModelOrchestrator.effectiveAssignments(installed: models, configured: preferences.modelRoles ?? [:]))
+        let heavy = ["30b", "32b", "70b", "72b"].contains(where: request.model.lowercased().contains)
+        if heavy, ProcessInfo.processInfo.physicalMemory <= 24 * 1024 * 1024 * 1024,
+           chats[i].model != request.model, !(preferences.modelRoles ?? [:]).values.contains(request.model) {
+            throw AgentError.message("Для автоматического делегирования на Mac с 24 ГБ выберите компактную модель 8–12B. Тяжёлая модель требует явного назначения пользователем в /models.")
+        }
         let files = FileTools(paths: storage.paths)
         let paths = try request.imagePaths.map { try files.resolve($0, workingDirectory: chats[i].folder).path }
         let prepared = try await DocumentReader.prepare(attachments: paths.map { Attachment(path: $0, kind: "image") })
-        guard prepared.imageURLs.count == paths.count else { throw AgentError.message("Для image_paths_json нужны поддерживаемые изображения, а не документы или папки") }
+        guard prepared.imageURLs.count == paths.count else { throw AgentError.message("Для image_paths нужны поддерживаемые изображения, а не документы или папки") }
         let endpoint = preferences.lmEndpoint
-        activity = "Специалист: \(request.model)…"
+        updateTaskPhase("Специалист: \(request.model)…")
         let reply = try await withThrowingTaskGroup(of: LMReply.self) { group in
             group.addTask {
                 try await LMStudioClient(endpoint: endpoint).complete(model: request.model, messages: request.messages(imageURLs: prepared.imageURLs), tools: []) { _ in }
