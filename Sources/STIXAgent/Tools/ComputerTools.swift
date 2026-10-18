@@ -6,6 +6,14 @@ import UniformTypeIdentifiers
 
 /// Validation is pure and deliberately independent of macOS privacy permissions.
 enum ComputerToolValidation {
+    static let browserActions = ["tabs", "read", "open", "click", "fill"]
+    static func browserAction(_ args: JSONValue) throws {
+        guard browserActions.contains(try args.requiredString("action")) else { throw AgentError.message("browser action: tabs/read/open/click/fill. Изменение настроек браузера этим инструментом не поддерживается.") }
+    }
+    static func javascriptUnavailable(_ message: String) -> Bool {
+        let text = (message.components(separatedBy: ". Разрешите Automation;").first ?? message).lowercased()
+        return text.contains("javascript") && ["disabled", "отключен", "отключён", "not allowed", "not enabled", "allow javascript", "разрешить javascript"].contains(where: text.contains)
+    }
     static func validate(_ args: JSONValue, allowed: Set<String>) throws {
         guard let object = args.object, Set(object.keys).isSubset(of: allowed) else { throw AgentError.message("Неизвестные аргументы computer/browser") }
     }
@@ -47,7 +55,7 @@ enum ComputerToolValidation {
         .init(name: "open_application", description: "Launch and focus an installed macOS application using its exact bundle_id. Returns pid; take a fresh computer_snapshot before interacting.", parameters: ToolCatalog.schema(["bundle_id": "string"], required: ["bundle_id"])),
         .init(name: "computer_snapshot", description: "Read bounded accessibility tree for bundle_id (default frontmost app). Returns snapshot_id and element IDs. Optional capture: none/window/screen; PNG stays local. Requires macOS Accessibility / Screen Recording permission.", parameters: ToolCatalog.schema(["bundle_id": "string", "max_elements": "integer", "max_depth": "integer", "capture": "string"], required: [])),
         .init(name: "computer_action", description: "Act on exact AX snapshot element. action: click/fill/scroll/key. key uses named key and comma-separated modifiers (command/shift/option/control), requires the snapshot app to be frontmost with a non-secure focused element. Letter shortcuts require command/control. snapshot_id and element_id required. fill uses text; scroll uses direction up/down/left/right. Secure fields are forbidden. Take a new snapshot after each action.", parameters: ToolCatalog.schema(["snapshot_id": "string", "element_id": "string", "action": "string", "text": "string", "direction": "string", "key": "string", "modifiers": "string"], required: ["snapshot_id", "element_id", "action"])),
-        .init(name: "browser_action", description: "Safari/Chrome browser tabs/read/open/click/fill through Apple Events. browser safari/chrome required. read needs window (1-based), tab (1-based); returns snapshot_id and element_id. open needs url and creates tab. click/fill need snapshot_id and element_id from read; fill needs text. Password/secret fields forbidden. No arbitrary JS. Browser must allow JavaScript from Apple Events for DOM actions.", parameters: ToolCatalog.schema(["browser": "string", "action": "string", "window": "integer", "tab": "integer", "url": "string", "snapshot_id": "string", "element_id": "string", "text": "string"], required: ["browser", "action"]))
+        .init(name: "browser_action", description: "Safari/Chrome browser tabs/read/open/click/fill through Apple Events. browser safari/chrome required. read needs window (1-based), tab (1-based); returns snapshot_id and element_id. open needs url and creates tab. click/fill need snapshot_id and element_id from read; fill needs text. Password/secret fields forbidden. No arbitrary JS. When JavaScript from Apple Events is disabled, read automatically selects the requested tab and uses macOS Accessibility; its snapshot IDs also work with browser click/fill. Settings changes are unsupported.", parameters: ToolCatalog.schema(["browser": "string", "action": "string", "window": "integer", "tab": "integer", "url": "string", "snapshot_id": "string", "element_id": "string", "text": "string"], required: ["browser", "action"]))
     ]
     private var axSnapshot = ""
     private var axPID: pid_t = 0
@@ -58,10 +66,13 @@ enum ComputerToolValidation {
         var items: [String: JSONValue]; var created: Date
     }
     private var dom: DOMSnapshot?
+    private struct AccessibleBrowserSnapshot { let browser: String; let id: String; let url: String; let tab: Int }
+    private var accessibleBrowser: AccessibleBrowserSnapshot?
     private let captureDirectory: URL
     init(captureDirectory: URL = FileManager.default.temporaryDirectory.appendingPathComponent("STIXAgent-Captures", isDirectory: true)) { self.captureDirectory = captureDirectory }
 
     func snapshot(_ args: JSONValue) async throws -> ToolOutcome {
+        accessibleBrowser = nil
         try ComputerToolValidation.validate(args, allowed: ["bundle_id", "max_elements", "max_depth", "capture"])
         let limit = try ComputerToolValidation.boundedInt(args["max_elements"], fallback: 150, range: 1...500)
         let depth = try ComputerToolValidation.boundedInt(args["max_depth"], fallback: 8, range: 1...15)
@@ -221,6 +232,7 @@ enum ComputerToolValidation {
         return url.path
     }
     func browserAction(_ args: JSONValue) async throws -> ToolOutcome {
+        try ComputerToolValidation.browserAction(args)
         try ComputerToolValidation.validate(args, allowed: ["browser", "action", "window", "tab", "url", "snapshot_id", "element_id", "text"])
         let browser = try args.requiredString("browser"), action = try args.requiredString("action")
         guard ["safari", "chrome"].contains(browser) else { throw AgentError.message("browser: safari/chrome") }
@@ -251,13 +263,20 @@ enum ComputerToolValidation {
             let expression = "make new tab at end of tabs of front window with properties {URL:\(ComputerToolValidation.appleString(url))}"
             let makeWindow = browser == "safari" ? "make new document" : "make new window"
             _ = try await appleEvent("tell \(app)\nif (count of windows) is 0 then \(makeWindow)\n\(expression)\nend tell")
-            dom = nil
+            dom = nil; accessibleBrowser = nil
             return .init(text: "Вкладка создана: \(url). Используйте tabs/read для проверки загрузки.")
         }
         if action == "read" {
             let window = try ComputerToolValidation.boundedInt(args["window"], fallback: 1, range: 1...1000)
             let tab = try ComputerToolValidation.boundedInt(args["tab"], fallback: 1, range: 1...1000)
-            let raw = try await browserJS(Self.readDOM, browser: browser, window: window, tab: tab)
+            let raw: String
+            do { raw = try await browserJS(Self.readDOM, browser: browser, window: window, tab: tab) }
+            catch {
+                if Task.isCancelled { throw CancellationError() }
+                guard ComputerToolValidation.javascriptUnavailable(error.localizedDescription) else { throw error }
+                return try await accessibleBrowserRead(browser: browser, window: window, tab: tab)
+            }
+            accessibleBrowser = nil
             let result = try JSONValue.parse(raw)
             let id = UUID().uuidString
             var items: [String: JSONValue] = [:]
@@ -265,6 +284,14 @@ enum ComputerToolValidation {
             dom = .init(id: id, browser: browser, window: window, tab: tab, url: result["url"].string ?? "", items: items, created: Date())
             var output = result.object ?? [:]; output["snapshot_id"] = .string(id)
             return .init(text: JSONValue.object(output).encoded)
+        }
+        if let fallback = accessibleBrowser, fallback.browser == browser, args["snapshot_id"].string == fallback.id {
+            let currentURL = try await appleEvent("tell \(app) to return URL of tab \(fallback.tab) of window 1")
+            guard currentURL == fallback.url else { accessibleBrowser = nil; throw AgentError.message("Вкладка изменилась. Выполните read повторно.") }
+            var actionArgs: [String: JSONValue] = ["snapshot_id": .string(fallback.id), "element_id": args["element_id"], "action": .string(action)]
+            if let text = args["text"].string { actionArgs["text"] = .string(text) }
+            defer { accessibleBrowser = nil }
+            return try await self.action(.object(actionArgs))
         }
         guard ["click", "fill"].contains(action), let snapshot = dom,
               snapshot.browser == browser, try args.requiredString("snapshot_id") == snapshot.id,
@@ -281,6 +308,35 @@ enum ComputerToolValidation {
         let parsed = try JSONValue.parse(result)
         guard parsed["ok"].bool == true else { throw AgentError.message(parsed["error"].string ?? "Browser action failed") }
         return .init(text: "Действие выполнено; вызовите read для проверки результата.")
+    }
+    /// Uses the existing AX permission when DOM scripting is disabled. Select the
+    /// exact requested tab first; metadata comes from Apple Events without JS.
+    private func accessibleBrowserRead(browser: String, window: Int, tab: Int) async throws -> ToolOutcome {
+        let bundle = browser == "safari" ? "com.apple.Safari" : "com.google.Chrome"
+        let app = "application id " + ComputerToolValidation.appleString(bundle)
+        let select = browser == "safari" ? "set current tab of targetWindow to targetTab" : "set active tab index of targetWindow to \(tab)"
+        let title = browser == "safari" ? "name" : "title"
+        let metadata = try await appleEvent("""
+        tell \(app)
+            set targetWindow to window \(window)
+            set targetTab to tab \(tab) of targetWindow
+            \(select)
+            set index of targetWindow to 1
+            activate
+            return (URL of targetTab) & linefeed & (\(title) of targetTab)
+        end tell
+        """)
+        let lines = metadata.components(separatedBy: "\n")
+        let url = String((lines.first ?? "").prefix(8192)), pageTitle = String(lines.dropFirst().joined(separator: "\n").prefix(1000))
+        var output: [String: JSONValue] = ["mode": .string("accessibility"), "url": .string(url), "title": .string(pageTitle), "note": .string("JavaScript браузера отключён. Выбрана запрошенная вкладка; используются системные элементы macOS. Для click/fill используйте snapshot_id/element_id ниже; произвольные скрипты и изменение настроек недоступны.")]
+        dom = nil
+        if AXIsProcessTrusted() {
+            let capture = try await snapshot(.object(["bundle_id": .string(bundle), "max_elements": .number(300), "max_depth": .number(12)]))
+            let tree = try JSONValue.parse(capture.text)
+            output["snapshot_id"] = tree["snapshot_id"]; output["elements"] = tree["elements"]; output["bounded"] = tree["bounded"]
+            accessibleBrowser = .init(browser: browser, id: axSnapshot, url: url, tab: tab)
+        } else { output["note"] = .string("Прочитаны URL и заголовок без JavaScript. Для текста и элементов страницы разрешите Универсальный доступ STIX Agent в macOS.") }
+        return .init(text: JSONValue.object(output).encoded)
     }
     private final class CancellationGate: @unchecked Sendable {
         private let lock = NSLock()

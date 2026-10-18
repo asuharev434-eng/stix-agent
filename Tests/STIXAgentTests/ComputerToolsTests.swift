@@ -2,6 +2,14 @@ import XCTest
 @testable import STIXAgent
 
 final class ComputerToolsTests: XCTestCase {
+    func testBrowserRejectsInventedSettingsActionsBeforeApproval() throws {
+        XCTAssertThrowsError(try ComputerToolValidation.browserAction(.object(["action": .string("toggle_settings")])))
+        for action in ComputerToolValidation.browserActions { XCTAssertNoThrow(try ComputerToolValidation.browserAction(.object(["action": .string(action)]))) }
+        XCTAssertTrue(ComputerToolValidation.javascriptUnavailable("Выполнение JavaScript через AppleScript отключено"))
+        XCTAssertTrue(ComputerToolValidation.javascriptUnavailable("JavaScript from Apple Events is disabled"))
+        XCTAssertFalse(ComputerToolValidation.javascriptUnavailable("Automation permission denied"))
+        XCTAssertFalse(ComputerToolValidation.javascriptUnavailable("Apple Events: permission denied. Разрешите Automation; для DOM включите Allow JavaScript from Apple Events в браузере."))
+    }
     func testBrowserURLAllowsOnlyPublicWebSchemesWithoutCredentials() throws {
         XCTAssertEqual(try ComputerToolValidation.webURL("https://example.com/a?q=1"), "https://example.com/a?q=1")
         for value in ["javascript:alert(1)", "file:///etc/passwd", "https://user:pass@example.com", "data:text/html,test", "https://example.com\n"] {

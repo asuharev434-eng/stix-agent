@@ -117,6 +117,7 @@ extension AppStore {
             try await approve(tool: name, arguments: args, title: "Открыть приложение?", detail: args.encoded, chatID: chatID)
             return try await computerTools.openApplication(args)
         case "computer_action", "browser_action":
+            if name == "browser_action" { try ComputerToolValidation.browserAction(args) }
             let readOnly = name == "browser_action" && ["tabs", "read"].contains(args["action"].string ?? "")
             if !readOnly { try await approve(tool: name, arguments: args, title: "Действие в приложении", detail: args.encoded, chatID: chatID) }
             if name == "computer_action" { return try await computerTools.action(args) }
