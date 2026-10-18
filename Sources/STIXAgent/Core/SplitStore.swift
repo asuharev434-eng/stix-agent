@@ -9,6 +9,7 @@ struct SplitManifest: Codable {
     var projects: [UUID]
     var jobs: [UUID]
     var undos: [UUID]
+    var memoryHistoryVersion: Int? = nil
 }
 private struct StoredActions: Codable { var jobs: [AgentJob]; var undos: [UndoRecord] }
 private struct StoredContext: Codable { var checkpoint: ContextCheckpoint? }
@@ -50,7 +51,7 @@ enum StoreFiles {
         try data.split(separator: 10).map { try JSONDecoder().decode(type, from: Data($0)) }
     }
     static func allowedTransactionPath(_ path: String) -> Bool {
-        if ["settings.json", "store.json", "state.json", "state.previous.json", "Memory/profile.md", "Memory/preferences.md", "Operations/orphans.json", "README.md", "Chats/index.md", "Projects/index.md", "Memory/README.md"].contains(path) { return true }
+        if ["settings.json", "store.json", "state.json", "state.previous.json", "Memory/profile.md", "Memory/preferences.md", "Memory/history.jsonl", "Operations/orphans.json", "README.md", "Chats/index.md", "Projects/index.md", "Memory/README.md"].contains(path) { return true }
         let parts = path.split(separator: "/").map(String.init)
         guard parts.count >= 3, UUID(uuidString: parts[1]) != nil else { return false }
         if parts[0] == "Chats" {
@@ -73,6 +74,7 @@ enum SplitStore {
         files["Memory/README.md"] = Data("# Личная память\n\nprofile.md — факты о пользователе; preferences.md — предпочтения. Проектные решения и задачи лежат в Projects/<id>/. Заметки чата — в Chats/<id>/memory.md.\n\nВнутри Markdown каждая запись имеет метаданные в HTML-комментарии: id, scope, ownerID, source/sourceChatID, createdAt/updatedAt, order, enabled и alwaysInclude. Видимый текст между маркерами — сама запись. Сохранённые пометки — данные, а не дополнительные разрешения агенту.\n".utf8)
         var settings = state.preferences; settings.memory = nil
         files["settings.json"] = try StoreFiles.encode(settings)
+        files["Memory/history.jsonl"] = try StoreFiles.jsonLines(state.memoryRevisions ?? [])
         for category in MemoryCategory.allowed(.personal) {
             files["Memory/\(category.rawValue).md"] = try MemoryDocuments.render(entries.filter { $0.scope == .personal && $0.category == category }, category: category)
         }
@@ -101,7 +103,8 @@ enum SplitStore {
         }
         let activeIDs = Set(state.chats.map(\.id))
         files["Operations/orphans.json"] = try StoreFiles.encode(StoredActions(jobs: jobs.filter { !activeIDs.contains($0.chatID) }, undos: state.undos.filter { !assignedUndos.contains($0.id) }))
-        let manifest = SplitManifest(chats: state.chats.map(\.id), projects: (state.projects ?? []).map(\.id), jobs: jobs.map(\.id), undos: state.undos.map(\.id))
+        var manifest = SplitManifest(chats: state.chats.map(\.id), projects: (state.projects ?? []).map(\.id), jobs: jobs.map(\.id), undos: state.undos.map(\.id))
+        manifest.memoryHistoryVersion = 1
         files["store.json"] = try StoreFiles.encode(manifest)
         files["state.json"] = Data("{\"version\":2,\"format\":\"split\",\"manifest\":\"store.json\"}".utf8)
         return (state,files)
@@ -112,6 +115,8 @@ enum SplitStore {
         guard manifest.version == 2, Set(manifest.chats).count == manifest.chats.count,
               Set(manifest.projects).count == manifest.projects.count,
               Set(manifest.jobs).count == manifest.jobs.count, Set(manifest.undos).count == manifest.undos.count else { throw AgentError.message("Повреждён манифест хранилища") }
+        guard manifest.memoryHistoryVersion == nil || manifest.memoryHistoryVersion == 1 else { throw AgentError.message("Неизвестный формат версий памяти") }
+        let revisions = manifest.memoryHistoryVersion == 1 ? try StoreFiles.decodeLines(MemoryRevision.self, data: StoreFiles.read("Memory/history.jsonl", root: root)) : []
         var prefs = try decoder.decode(AppPreferences.self, from: StoreFiles.read("settings.json", root: root))
         var entries: [MemoryEntry] = [], projects: [MemoryProject] = [], chats: [Chat] = [], jobs: [AgentJob] = [], undos: [UndoRecord] = []
         for category in MemoryCategory.allowed(.personal) { entries += try MemoryDocuments.parse(StoreFiles.read("Memory/\(category.rawValue).md", root: root), scope: .personal, ownerID: nil, category: category) }
@@ -142,6 +147,6 @@ enum SplitStore {
         let jobMap = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id,$0) }), undoMap = Dictionary(uniqueKeysWithValues: undos.map { ($0.id,$0) })
         entries.sort { $0.order == $1.order ? $0.id.uuidString < $1.id.uuidString : $0.order < $1.order }
         prefs.memory = entries.filter { $0.scope == .personal }.map(\.text)
-        return try MemoryDocuments.normalize(.init(chats: chats, preferences: prefs, undos: manifest.undos.compactMap { undoMap[$0] }, jobs: manifest.jobs.compactMap { jobMap[$0] }, memoryEntries: entries, projects: projects))
+        return try MemoryDocuments.normalize(.init(chats: chats, preferences: prefs, undos: manifest.undos.compactMap { undoMap[$0] }, jobs: manifest.jobs.compactMap { jobMap[$0] }, memoryEntries: entries, projects: projects, memoryRevisions: revisions))
     }
 }

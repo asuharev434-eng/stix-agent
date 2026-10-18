@@ -70,7 +70,8 @@ final class StateStorage {
             if !FileManager.default.fileExists(atPath: paths.root.appendingPathComponent("store.json").path), FileManager.default.fileExists(atPath: paths.state.path) { throw AgentError.message("Сначала прочитайте и перенесите прежнее хранилище через load; исходные данные не изменены") }
             if let fingerprints {
                 for (path,digest) in fingerprints {
-                    guard try StoreFiles.digest(StoreFiles.read(path, root: paths.root)) == digest else {
+                    let actual = digest == "absent" && !FileManager.default.fileExists(atPath: paths.root.appendingPathComponent(path).path) ? "absent" : try StoreFiles.digest(StoreFiles.read(path, root: paths.root))
+                    guard actual == digest else {
                         throw AgentError.message("Файлы хранилища изменены вне приложения. Изменения сохранены; перезапустите приложение для перечитывания")
                     }
                 }
@@ -92,7 +93,10 @@ final class StateStorage {
     }
     private func currentFingerprints(_ state: PersistedState) throws -> [String:String] {
         let (_,files) = try SplitStore.files(state)
-        return try Dictionary(uniqueKeysWithValues: files.keys.map { ($0,try StoreFiles.digest(StoreFiles.read($0, root: paths.root))) })
+        return try Dictionary(uniqueKeysWithValues: files.keys.map { path in
+            if path == "Memory/history.jsonl", !FileManager.default.fileExists(atPath: paths.root.appendingPathComponent(path).path) { return (path, "absent") }
+            return (path, try StoreFiles.digest(StoreFiles.read(path, root: paths.root)))
+        })
     }
     private func commit(_ input: PersistedState) throws -> PersistedState {
         let (normalized, encoded) = try SplitStore.files(input)

@@ -14,7 +14,7 @@ enum Diagnostics {
         async let comfy = inspectComfy(endpoint: preferences.comfyEndpoint, fetch: fetch)
         let permissions = NativeCapabilities.status()
         let statuses = Dictionary(grouping: jobs, by: \.status).mapValues(\.count)
-        var lines = ["Диагностика STIX Agent (только чтение)", memoryReport(),
+        var lines = ["Диагностика STIX Agent (только чтение)", memoryReport(), diskReport(availableBytes: diskAvailable()),
                      "Память агента: \(preferences.memory?.count ?? 0) записей; содержимое не читается.",
                      "Очередь агента: выполняются \(statuses["running", default: 0]), ожидают \(statuses["queued", default: 0]), приостановлены \(statuses["paused", default: 0]), прерваны \(statuses["interrupted", default: 0])."]
         lines += await [lm, comfy]
@@ -140,6 +140,14 @@ enum Diagnostics {
         guard status == KERN_SUCCESS else { return String(format: "Память Mac: %.1f ГБ физической памяти; свободная память недоступна.", total) }
         let free = Double(UInt64(info.free_count) + UInt64(info.inactive_count)) * Double(vm_kernel_page_size) / 1_073_741_824
         return String(format: "Память Mac: %.1f ГБ физической; свободная + неактивная ≈ %.1f ГБ. Это оценка, не гарантия места для загрузки модели.", total, free)
+    }
+    static func diskAvailable(at url: URL = FileManager.default.homeDirectoryForCurrentUser) -> Int64? {
+        (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage
+    }
+    static func diskReport(availableBytes: Int64?) -> String {
+        guard let availableBytes else { return "Диск: свободное место недоступно для оценки." }
+        let text = "Диск: доступно " + ByteCountFormatter.string(fromByteCount: max(0, availableBytes), countStyle: .file) + "."
+        return text + (availableBytes < 5_000_000_000 ? " Освободите не менее 5 ГБ перед генерацией и загрузкой моделей; приложение ничего не удаляет автоматически." : "")
     }
     enum DiagnosticError: Error { case nonLocal, http, responseTooLarge }
 }

@@ -139,6 +139,18 @@ struct TaskProgressView: View {
                         .font(.system(size: store.textSize(10), weight: .medium)).monospacedDigit().foregroundStyle(.secondary)
                 }
             }
+            if let checks = job.verifications, !checks.isEmpty {
+                DisclosureGroup("Проверки: \(checks.filter(\.passed).count) из \(checks.count)") {
+                    ForEach(checks) { check in
+                        Label(check.subject + " · " + check.detail, systemImage: check.passed ? "checkmark.circle" : "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(check.passed ? Color.secondary : Color.orange).textSelection(.enabled)
+                    }
+                }.font(.caption)
+            }
+            if let report = job.recoveryReport {
+                DisclosureGroup("Отчёт восстановления") { Text(report).font(.caption).textSelection(.enabled) }.font(.caption)
+            }
+            if job.skipNextAction == true { Label("Следующий шаг будет пропущен", systemImage: "forward.end").font(.caption).foregroundStyle(.secondary) }
             if let corrections = job.pendingCorrections, !corrections.isEmpty {
                 Label("Уточнений к следующему шагу: \(corrections.count)", systemImage: "text.bubble")
                     .font(.system(size: store.textSize(10))).foregroundStyle(.secondary)
@@ -150,7 +162,7 @@ struct TaskProgressView: View {
 
     private var controls: some View {
         HStack(spacing: 9) {
-            if (job.undoIDs ?? []).contains(where: { store.undos[$0] != nil }) && ["done", "paused", "interrupted"].contains(job.status) {
+            if (job.undoIDs ?? []).contains(where: { store.undos[$0] != nil }) && ["done", "paused", "interrupted", "failed", "cancelled"].contains(job.status) {
                 Button { store.undoJob(job.id) } label: { Image(systemName: "arrow.uturn.backward") }
                     .help("Отменить все изменения задачи").accessibilityLabel("Отменить изменения задачи")
             }
@@ -161,8 +173,10 @@ struct TaskProgressView: View {
                 Button { store.pauseTask() } label: { Image(systemName: "pause.fill") }
                     .help("Приостановить задачу").accessibilityLabel("Приостановить задачу")
             } else if ["paused", "interrupted", "failed"].contains(job.status) {
+                Button { store.inspectRecovery(job.id) } label: { Image(systemName: "checklist") }
+                    .help("Проверить состояние перед продолжением").accessibilityLabel("Проверить восстановление").disabled(store.busy)
                 Button { store.resumeJob(job.id) } label: { Image(systemName: "play.fill") }
-                    .help("Продолжить задачу").accessibilityLabel("Продолжить задачу")
+                    .help("Проверить выполненные действия и продолжить").accessibilityLabel("Продолжить задачу").disabled(store.busy)
             }
             if ["done", "cancelled", "failed"].contains(job.status) {
                 Button { store.dismissTask(job.id) } label: { Image(systemName: "xmark") }

@@ -90,7 +90,7 @@ extension AppStore {
         preserveDraft()
         var persisted = chats
         persisted[current].contextCheckpoint = checkpoint
-        try storage.save(.init(chats: persisted, preferences: preferences, undos: Array(undos.values), jobs: jobs, memoryEntries: memoryEntries, projects: projects))
+        try storage.save(.init(chats: persisted, preferences: preferences, undos: Array(undos.values), jobs: jobs, memoryEntries: memoryEntries, projects: projects, memoryRevisions: memoryRevisions))
         chats[current].contextCheckpoint = checkpoint
         contextNotices[chatID] = "Контекст сжат. Полная переписка сохранена."
         addMessage(.init(role: "tool", text: "Контекст сжат · полная переписка сохранена", toolName: "context", detail: "Сжатий: \(checkpoint.revision)\nСообщений в резюме: \(checkpoint.coveredCount)\nПримерно токенов истории: \(before.reduce(0) { $0 + ContextWindow.messageTokens($1) }) → \(after.reduce(0) { $0 + ContextWindow.messageTokens($1) })", status: "done"), to: chatID)

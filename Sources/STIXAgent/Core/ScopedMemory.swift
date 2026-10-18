@@ -116,6 +116,9 @@ enum MemoryDocuments {
         guard Set((state.memoryEntries ?? []).map(\.id)).count == (state.memoryEntries ?? []).count,
               Set(state.chats.map(\.id)).count == state.chats.count,
               Set(projects.map(\.id)).count == projects.count else { throw AgentError.message("Повторные идентификаторы хранилища") }
+        state.memoryRevisions = state.memoryRevisions ?? []
+        guard Set((state.memoryRevisions ?? []).map(\.id)).count == (state.memoryRevisions ?? []).count else { throw AgentError.message("Повторные идентификаторы версий памяти") }
+        for revision in state.memoryRevisions ?? [] { try revision.validated() }
         state.preferences.memory = (state.memoryEntries ?? []).filter { $0.scope == .personal }.map(\.text)
         return state
     }

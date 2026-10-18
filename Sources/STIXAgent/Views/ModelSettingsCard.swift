@@ -37,7 +37,7 @@ struct ModelSettingsCard: View {
                         modelOptions(selected: store.preferences.modelRoles?[role])
                     } label: { Label(title, systemImage: icon).frame(width: 185, alignment: .leading) }
                     if store.preferences.modelRoles?[role] == nil {
-                        Text("Сейчас: \(ModelOrchestrator.effectiveAssignments(installed: store.models, configured: [:])[role] ?? "нет доступной модели")")
+                        Text("Сейчас: \(store.specialistAssignments(configured: [:])[role] ?? "нет доступной модели")")
                             .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }

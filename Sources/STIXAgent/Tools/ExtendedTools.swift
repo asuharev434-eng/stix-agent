@@ -15,12 +15,13 @@ enum ExtendedToolCatalog {
         return .object(schema)
     }
     static let definitions: [ToolDefinition] = [
+        .init(name: "verify_result", description: "Read-only validation of local result. kind=syntax for Python/JS/JSON/sh/zsh without executing user code; kind=image decodes pixels/dimensions. Other program behavior requires an appropriate test via run_shell. Records actual evidence, not assumptions.", parameters: ToolCatalog.schema(["kind": "string", "path": "string"], required: ["kind", "path"])),
         .init(name: "recover_changes", description: "List durable file plans interrupted by application crash and their receipts. Read before replaying an interrupted apply_changes. Does not mutate files.", parameters: ToolCatalog.schema([:], required: [])),
         .init(name: "rollback_changes", description: "Rollback a durable file plan after approval. Resumes interrupted rollback, stops safely at conflicts. plan_id from preview_changes or recover_changes.", parameters: ToolCatalog.schema(["plan_id": "string"], required: ["plan_id"])),
         .init(name: "read_document", description: "Extract local PDF/DOCX/text/image OCR. Images can additionally be analyzed via delegate_model vision with image_paths_json.", parameters: ToolCatalog.schema(["path": "string"], required: ["path"])),
         .init(name: "preview_changes", description: "Preview file diff or batch operations without changing source. operations_json array: {kind:write,path,content}, {kind:move,source,destination}, {kind:trash,path}. Returns plan_id and visual artifact. Use before modifying existing code or sorting many files.", parameters: ToolCatalog.schema(["operations_json": "string"], required: ["operations_json"])),
         .init(name: "apply_changes", description: "Apply a reviewed file plan after host approval. Revalidates unchanged sources/destinations. Changes have undo receipts.", parameters: ToolCatalog.schema(["plan_id": "string"], required: ["plan_id"])),
-        .init(name: "manage_memory", description: "list/read/remember/update/forget scoped memory. scope personal/project/chat (default personal), category profile/preferences for personal, overview/decisions/tasks for project, notes for chat. Never access another project/chat. Remember only when user requests it; forget by exact text, or all when explicitly requested. Never store secrets.", parameters: ToolCatalog.schema(["action": "string", "text": "string", "scope": "string", "category": "string", "id": "string", "always_include": "boolean", "query": "string"], required: ["action"])),
+        .init(name: "manage_memory", description: "list/read/remember/update/forget/history/restore scoped memory. history returns scoped revisions; restore requires id=revision_id and an explicit user request. scope personal/project/chat (default personal), category profile/preferences for personal, overview/decisions/tasks for project, notes for chat. Never access another project/chat. Remember only when user requests it; forget by exact text, or all when explicitly requested. Never store secrets.", parameters: ToolCatalog.schema(["action": "string", "text": "string", "scope": "string", "category": "string", "id": "string", "always_include": "boolean", "query": "string"], required: ["action"])),
         .init(name: "configure_plugin_environment", description: "Map an environment variable to an existing credential_id from protected input for a stdio MCP plugin. No secret values in args. User approval required, plugin restarted. Empty credential_id removes mapping.", parameters: ToolCatalog.schema(["plugin_id": "string", "variable": "string", "credential_id": "string"], required: ["plugin_id", "variable", "credential_id"])),
         .init(name: "generate_image", description: "Generate or edit local ComfyUI image. Always include prompt describing the desired result. For conversational edit of just-generated image set input_image='last' (same chat). Keep original. mask is an optional absolute PNG file path, never a color word; white pixels edit/black preserve. Optional resize_only true resizes without diffusion and permits an empty prompt string. width/height 256..2048 multiples8, steps1..100, count1..4; denoise0..1. For variants input_image last + count. Image prompt direct to Comfy.", parameters: imageParameters)
     ]
@@ -47,6 +48,15 @@ extension AppStore {
     }
     func executeExtended(_ name: String, args: JSONValue, chatID: UUID, folder: String) async throws -> ToolOutcome? {
         switch name {
+        case "verify_result":
+            let kind = try args.requiredString("kind"), paths = storage.paths
+            let path = try FileTools(paths: paths).resolve(args.requiredString("path"), workingDirectory: folder).path
+            let check: TaskVerification
+            if kind == "syntax" { check = try await ResultVerifier.syntax(path: path, paths: paths, runner: processRunner) }
+            else if kind == "image" { check = try await fileWork { try ResultVerifier.image(path, paths: paths) } }
+            else { throw AgentError.message("kind: syntax или image") }
+            recordVerification(check)
+            return .init(text: "\(check.passed ? "Проверка пройдена" : "Проверка не пройдена"): \(vault.redact(check.detail))")
         case "recover_changes":
             let paths = storage.paths
             let records = try await fileWork { try FileChangePlanner(paths: paths).recoveries() }
@@ -83,24 +93,27 @@ extension AppStore {
             guard raw.utf8.count <= 2_000_000 else { throw AgentError.message("План превышает 2 МБ") }
             let operations = try JSONValue.parse(raw), paths = storage.paths
             let preview = try await fileWork { try FileChangePlanner(paths: paths).preview(operations: operations, workingDirectory: folder) }
+            addMessage(.init(role: "file_plan", text: preview.id), to: chatID)
             return .init(text: "plan_id: \(preview.id)\n\(preview.summary)", attachments: [preview.attachment])
         case "apply_changes":
             let id = try args.requiredString("plan_id"), paths = storage.paths
             try await approve(tool: name, arguments: args, title: "Применить план изменений?", detail: "План \(id). Предпросмотр находится выше в чате. Изменения проверяются повторно перед записью.", chatID: chatID)
             do {
                 let result = try await fileWork { try FileChangePlanner(paths: paths).apply(id: id, workingDirectory: folder) }
+                result.results.compactMap(\.undo).forEach(registerUndo)
+                var checks: [TaskVerification] = []
                 for item in result.results {
                     if let undo = item.undo {
-                        registerUndo(undo)
+                        checks += try await verifyMutation(undo)
                         addMessage(.init(role: "tool", text: item.text, attachments: undo.kind == "write" ? [.init(path: undo.source, kind: "file")] : [], toolName: undo.kind == "write" ? "write_file" : undo.kind == "move" ? "move_file" : "trash_file", status: "done", undoID: undo.id), to: chatID)
                     }
                 }
-                return .init(text: result.results.map(\.text).joined(separator: "\n"))
+                return .init(text: result.results.map(\.text).joined(separator: "\n") + "\nПроверки:\n" + checks.map { ($0.passed ? "✓ " : "⚠ ") + $0.subject + ": " + $0.detail }.joined(separator: "\n"))
             } catch let error as FileChangePlanner.ApplyFailure {
                 error.undoRecords.forEach(registerUndo); throw error
             }
         case "manage_memory": return try executeMemory(args, chatID: chatID)
-        case "list_model_capabilities": return .init(text: ModelOrchestrator.catalog(installed: models, assignments: ModelOrchestrator.effectiveAssignments(installed: models, configured: preferences.modelRoles ?? [:])))
+        case "list_model_capabilities": return .init(text: ModelOrchestrator.catalog(installed: models, assignments: specialistAssignments()))
         case "show_model_settings":
             showModelSettings(chatID: chatID); return .init(text: "Форма выбора моделей показана в чате. Настройки меняет пользователь в форме.")
         case "delegate_model": return try await delegateModel(args, chatID: chatID)

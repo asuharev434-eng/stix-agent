@@ -122,6 +122,21 @@ struct FileChangePlanner: Sendable {
         return Preview(id: id, summary: "План \(id): \(operations.count) операций. Изменения ещё не применены. Проверьте вложенный предпросмотр.", attachment: Attachment(path: artifact.path, kind: "html"))
     }
 
+    struct Detail: Sendable {
+        let status: String
+        let workingDirectory: String
+        let operations: [String]
+        let receiptCount: Int
+    }
+    func detail(id: String) throws -> Detail {
+        Self.lock.lock(); defer { Self.lock.unlock() }
+        let plan = try load(id)
+        return Detail(status: plan.status, workingDirectory: plan.workingDirectory, operations: plan.operations.map {
+            let verb = $0.kind == "move" ? "Переместить" : $0.kind == "write" ? "Записать" : "В Корзину"
+            return verb + ": " + $0.source + ($0.destination.map { " → " + $0 } ?? "")
+        }, receiptCount: plan.receipts.count)
+    }
+
     func apply(id: String, workingDirectory: String) throws -> ApplyResult {
         Self.lock.lock(); defer { Self.lock.unlock() }
         guard UUID(uuidString: id) != nil else { throw AgentError.message("Некорректный идентификатор плана") }

@@ -9,8 +9,10 @@ struct MemoryCard: View {
     @State private var text = ""
     @State private var editing: UUID?
     @State private var always = true
+    @State private var showHistory = false
     private var chat: Chat? { store.chats.first { $0.id == chatID } }
     private var records: [MemoryEntry] { store.memoryRecords(scope: scope, chatID: chatID) }
+    private var reviewNotes: [UUID:String] { MemoryReview.notes(records) }
     private var project: MemoryProject? { store.projects.first { $0.id == chat?.projectID } }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -38,6 +40,10 @@ struct MemoryCard: View {
                             Button { editing = record.id; text = record.text; category = record.category; always = record.isCore } label: { Image(systemName: "pencil") }.help("Изменить запись")
                             Button { perform { try store.forgetMemory(record.id, scope: scope, chatID: chatID) } } label: { Image(systemName: "trash") }.help("Удалить запись")
                         }
+                        if let note = reviewNotes[record.id] { Text(store.vault.redact(note)).font(.caption2).foregroundStyle(.orange) }
+                        if record.updatedAt.timeIntervalSince1970 > 0, Date().timeIntervalSince(record.updatedAt) > 90 * 86400 {
+                            Label("Запись старше 90 дней — проверьте актуальность", systemImage: "clock").font(.caption2).foregroundStyle(.orange)
+                        }
                         Text(store.vault.redact(record.text)).font(.callout).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                         Text("\(record.source) · \(record.updatedAt.timeIntervalSince1970 == 0 ? "дата неизвестна" : record.updatedAt.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(.secondary)
                         if let id = record.sourceChatID, let source = store.chats.first(where: { $0.id == id }) {
@@ -46,6 +52,22 @@ struct MemoryCard: View {
                     }.padding(12).agentCard(cornerRadius: 12)
                 }
                 Divider()
+                Text("Изменения и удаление сохраняются в локальной истории для восстановления.").font(.caption2).foregroundStyle(.secondary)
+                Toggle("История изменений", isOn: $showHistory).toggleStyle(.button).font(.caption)
+                if showHistory {
+                    let history = store.memoryHistory(scope: scope, chatID: chatID)
+                    if history.isEmpty { Text("Изменений пока нет").font(.caption).foregroundStyle(.secondary) }
+                    ForEach(Array(history.prefix(30))) { revision in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(revision.action + " · " + revision.createdAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                            if let before = revision.before { Text("До: " + store.vault.redact(before.text)).font(.caption).textSelection(.enabled) }
+                            if let after = revision.after { Text("После: " + store.vault.redact(after.text)).font(.caption).textSelection(.enabled) }
+                            else { Text("Запись удалена").font(.caption).foregroundStyle(.secondary) }
+                            Button(revision.before == nil ? "Восстановить запись" : "Восстановить прежнюю версию") { perform { try store.restoreMemory(revision.id, chatID: chatID) } }.font(.caption).disabled(store.busy)
+                        }.padding(10).agentCard(cornerRadius: 10)
+                    }
+                    if history.count > 30 { Text("Показаны 30 последних изменений; полный журнал хранится локально в Memory/history.jsonl").font(.caption).foregroundStyle(.secondary) }
+                }
                 Picker("Раздел", selection: $category) { ForEach(MemoryCategory.allowed(scope)) { Text($0.title).tag($0) } }.labelsHidden().frame(maxWidth: 220, alignment: .leading)
                 TextField("Что запомнить…", text: $text, axis: .vertical).textFieldStyle(.roundedBorder)
                 Toggle("Всегда учитывать в этой области", isOn: $always).font(.caption)

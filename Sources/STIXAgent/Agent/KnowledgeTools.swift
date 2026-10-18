@@ -66,7 +66,7 @@ extension AppStore {
         if ["/memory", "покажи память", "что ты помнишь обо мне"].contains(lower) {
             addMessage(.init(role: "memory", text: "Память"), to: chatID); return true
         }
-        if lower == "/diagnostics" || lower == "проверь подключение моделей" || lower == "почему не работает генерация?" {
+        if lower == "/doctor" || lower == "/diagnostics" || lower == "проверь подключение моделей" || lower == "почему не работает генерация?" {
             Task { await showDiagnostics(chatID: chatID) }; return true
         }
         if lower == "/search" || lower.hasPrefix("/search ") {

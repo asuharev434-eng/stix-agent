@@ -9,6 +9,29 @@ enum TaskControlTools {
 }
 
 extension AppStore {
+    func handleTaskControlMessage(_ raw: String, chatID: UUID) -> Bool {
+        guard busy, activeChatID == chatID, pending?.kind != .secret else { return false }
+        let text = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if ["/stop", "/pause", "остановись", "останови задачу", "стоп", "пауза"].contains(text) {
+            guard activeJobID != nil else { return false }
+            addMessage(.init(role: "user", text: raw), to: chatID); pauseTask(); return true
+        }
+        if ["/skip", "пропусти этот шаг", "пропусти следующий шаг", "пропусти это"].contains(text), let id = activeJobID, let i = jobs.firstIndex(where: { $0.id == id }) {
+            if pendingHere, pending?.kind == .approval { return steerCurrentTask("Пропусти отклонённый шаг и продолжи оставшуюся задачу") }
+            addMessage(.init(role: "user", text: raw), to: chatID)
+            jobs[i].skipNextAction = true
+            save(); return true
+        }
+        if text == "сделай иначе" { return steerCurrentTask(raw) }
+        for prefix in ["сделай иначе:", "вместо этого ", "корректировка:", "уточнение:", "/steer "] where text.hasPrefix(prefix) {
+            return steerCurrentTask(String(raw.dropFirst(prefix.count)))
+        }
+        return false
+    }
+    func consumeSkippedStep(chatID: UUID) -> Bool {
+        guard let id = activeJobID, let i = jobs.firstIndex(where: { $0.id == id && $0.chatID == chatID }), jobs[i].skipNextAction == true else { return false }
+        jobs[i].skipNextAction = false; save(); return true
+    }
     func toggleTaskPanel(chatID: UUID) {
         guard let i = index(chatID) else { return }
         chats[i].tasksCollapsed = !(chats[i].tasksCollapsed ?? false); save()

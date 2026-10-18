@@ -20,7 +20,7 @@ struct ContextWindowControl: View {
             .accessibilityLabel("Контекстное окно")
             .accessibilityValue(compacting ? "Сжатие контекста" : "Примерно \(window?.percentage ?? 0) процентов, включая резерв ответа")
             .help("Контекстное окно · ≈\(window?.percentage ?? 0)% с учётом резерва ответа")
-            .popover(isPresented: $expanded, arrowEdge: .top) { details.padding(20).frame(width: 340) }
+            .popover(isPresented: $expanded, arrowEdge: .top) { ScrollView { details.padding(20) }.frame(width: 430, height: 580) }
     }
     private var details: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -46,6 +46,19 @@ struct ContextWindowControl: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
+            if let id = store.selectedID, let snapshot = store.requestSnapshots[id] {
+                Text("Последний запрос: " + snapshot.model).font(.subheadline.weight(.medium))
+                Text(snapshot.createdAt.formatted(date: .omitted, time: .standard) + " · сообщений: \(snapshot.messageCount)").font(.caption).foregroundStyle(.secondary)
+                contextSection("Инструкции", text: snapshot.instructions)
+                contextSection("Подключённая память", text: snapshot.memory)
+                contextSection("Инструменты", text: snapshot.tools)
+                contextSection("Резюме контекста", text: snapshot.summary.isEmpty ? "Резюме не использовалось" : snapshot.summary)
+                contextSection("Сообщения и результаты", text: snapshot.transcript)
+                Text("Это окончательно сформированный запрос основной модели в текущем запуске приложения; доставка и успешный ответ зависят от локального сервера. Оценка окна выше отражает текущее состояние и черновик; она может отличаться от этого запроса.").font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Text("После следующего ответа здесь появится фактический состав запроса основной модели. Снимок хранится только до закрытия приложения.").font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
             if let checkpoint = store.currentChat?.contextCheckpoint, checkpoint.matches(store.currentChat?.history ?? []) {
                 Label("Сжатий: \(checkpoint.revision) · \(checkpoint.createdAt.formatted(date: .omitted, time: .shortened))", systemImage: "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
@@ -63,6 +76,11 @@ struct ContextWindowControl: View {
                 Label(compacting ? "Сжимаю…" : "Сжать сейчас", systemImage: "arrow.down.right.and.arrow.up.left").frame(maxWidth: .infinity)
             }.buttonStyle(.bordered).disabled(store.busy || store.currentChat?.model.isEmpty != false || store.currentChat.flatMap { ContextCompaction.plan(history: $0.history, checkpoint: $0.contextCheckpoint) } == nil)
         }
+    }
+    private func contextSection(_ title: String, text: String) -> some View {
+        DisclosureGroup(title) {
+            ScrollView { Text(text).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 220)
+        }.font(.callout)
     }
     private func row(_ title: String, value: String) -> some View {
         HStack { Text(title).foregroundStyle(.secondary); Spacer(); Text(value).monospacedDigit() }.font(.callout)

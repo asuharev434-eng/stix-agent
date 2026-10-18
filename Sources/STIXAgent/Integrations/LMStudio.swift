@@ -140,7 +140,7 @@ struct LMStudioClient: Sendable {
         return data
     }
 
-    func complete(model: String, messages: [LMMessage], tools: [ToolDefinition], maxOutputTokens: Int? = nil, preserveContext: Bool = false, thinking: Bool = false, onReasoning: @escaping @Sendable (String) async -> Void = { _ in }, onText: @escaping @Sendable (String) async -> Void) async throws -> LMReply {
+    func complete(model: String, messages: [LMMessage], tools: [ToolDefinition], maxOutputTokens: Int? = nil, preserveContext: Bool = false, thinking: Bool = false, onRequest: @escaping @Sendable ([LMMessage]) async -> Void = { _ in }, onReasoning: @escaping @Sendable (String) async -> Void = { _ in }, onText: @escaping @Sendable (String) async -> Void) async throws -> LMReply {
         let liveLimit = try await ModelResidency.shared.prepare(client: self, model: model)
         var messages = messages
         let system = messages.filter { $0.role == "system" }
@@ -155,6 +155,7 @@ struct LMStudioClient: Sendable {
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         let reserve = ContextWindow.estimate(limit: liveLimit, knownLimit: liveLimit != nil, system: "", tools: [], history: []).reserveTokens
         request.httpBody = try Self.requestBody(model: model, messages: messages, tools: tools, maxOutputTokens: min(maxOutputTokens ?? reserve, reserve), thinking: thinking)
+        await onRequest(messages)
         let session = session()
         defer { session.invalidateAndCancel() }
         let deadline = InferenceDeadline(limits: deadlines)

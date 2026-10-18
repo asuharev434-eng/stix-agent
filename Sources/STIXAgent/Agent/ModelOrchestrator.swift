@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Specialists return advice to the selected model; they never execute tools or change chat selection.
 enum ModelOrchestrator {
@@ -6,16 +7,40 @@ enum ModelOrchestrator {
         let lower = id.lowercased()
         return ["vision", "-vl", "llava", "qwen3.5", "gemma-4"].contains(where: lower.contains)
     }
-    static func effectiveAssignments(installed: [ModelDescriptor], configured: [String: String]) -> [String: String] {
+    /// A conservative Q4-ish estimate, explicitly heuristic; real residency is handled by LM Studio.
+    static func estimatedBytes(_ id: String) -> UInt64? {
+        guard let regex = try? NSRegularExpression(pattern: "(?i)([0-9]+(?:\\.[0-9]+)?)b(?:$|[^a-z0-9])"),
+              let match = regex.firstMatch(in: id, range: NSRange(id.startIndex..., in: id)),
+              let range = Range(match.range(at: 1), in: id), let parameters = Double(id[range]), parameters > 0, parameters < 1000 else { return nil }
+        return UInt64((parameters * 0.75 + 1.5) * 1_073_741_824)
+    }
+    static func fitsAutomatically(_ model: ModelDescriptor, physicalMemory: UInt64, availableMemory: UInt64? = nil) -> Bool {
+        guard let estimated = estimatedBytes(model.id) else { return true }
+        return Double(estimated) <= Double(physicalMemory) * 0.65 && (model.contextLimitIsLoaded == true || availableMemory == nil || estimated <= availableMemory!)
+    }
+    static func effectiveAssignments(installed: [ModelDescriptor], configured: [String: String], physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory, availableMemory: UInt64? = nil) -> [String: String] {
         var result = configured.filter { entry in installed.contains { $0.id == entry.value } }
-        let vision = installed.first { $0.kind == "vlm" && $0.id.lowercased().contains("qwen3.5-9b") } ?? installed.first { $0.kind == "vlm" } ?? installed.first { inferredVision($0.id) }
-        let compact = installed.first { $0.id.lowercased().contains("qwen3.5-9b") }
-        let coder = installed.first { let id = $0.id.lowercased(); return id.contains("coder") && !["30b", "32b", "70b"].contains(where: id.contains) }
-        let general = compact ?? installed.first { !$0.id.lowercased().contains("30b") }
-        for (role, model) in [("vision", vision), ("coding", coder ?? compact ?? general), ("reasoning", compact ?? general), ("writing", general), ("general", general)] {
+        let eligible = installed.filter { fitsAutomatically($0, physicalMemory: physicalMemory, availableMemory: availableMemory) }.sorted {
+            (estimatedBytes($0.id) ?? UInt64.max) < (estimatedBytes($1.id) ?? UInt64.max)
+        }
+        let vision = eligible.first { $0.kind == "vlm" } ?? eligible.first { inferredVision($0.id) }
+        let general = eligible.first { $0.kind != "embedding" }
+        let coder = eligible.first { $0.id.lowercased().contains("coder") }
+        let reasoner = eligible.first { $0.id.lowercased().contains("reason") || $0.id.lowercased().contains("deepseek-r1") }
+        for (role, model) in [("vision", vision), ("coding", coder ?? general), ("reasoning", reasoner ?? general), ("writing", general), ("general", general)] {
             if result[role] == nil, let model { result[role] = model.id }
         }
         return result
+    }
+    static func availableMemory() -> UInt64? {
+        var info = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let host = mach_host_self(); defer { mach_port_deallocate(mach_task_self_, host) }
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { host_statistics64(host, HOST_VM_INFO64, $0, &count) }
+        }
+        guard status == KERN_SUCCESS else { return nil }
+        return (UInt64(info.free_count) + UInt64(info.inactive_count)) * UInt64(vm_kernel_page_size)
     }
     static let roles = ["coding", "reasoning", "vision", "writing", "general"]
     private static var delegateParameters: JSONValue {
@@ -67,6 +92,9 @@ enum ModelOrchestrator {
                   array.allSatisfy({ $0.string?.isEmpty == false }) else { throw AgentError.message("image_paths_json: ожидается массив до 4 путей изображений") }
             paths = array.compactMap(\.string)
         }
+        if !paths.isEmpty, let selected = installed.first(where: { $0.id == model }), selected.kind != "vlm", !inferredVision(selected.id) {
+            throw AgentError.message("Модель не заявляет поддержку изображений. Выберите vision-модель в /models")
+        }
         return Request(model: model, reason: reason, task: task, imagePaths: paths)
     }
 
@@ -87,12 +115,15 @@ enum ModelOrchestrator {
             if lower.contains("coder") || lower.contains("coding") { inferred.append("coding") }
             if lower.contains("reason") || lower.contains("deepseek-r1") || lower.contains("qwq") { inferred.append("reasoning") }
             if inferredVision(model.id) { inferred.append("vision") }
-            return "\(model.id) | назначено: \(assigned.isEmpty ? "нет" : assigned.joined(separator: ", ")) | API тип: \(model.kind ?? "неизвестно") | по имени (не проверено): \(inferred.isEmpty ? "неизвестно" : inferred.joined(separator: ", "))"
+            return "\(model.id) | назначено: \(assigned.isEmpty ? "нет" : assigned.joined(separator: ", ")) | RAM оценка: \(estimatedBytes(model.id).map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .memory) } ?? "неизвестна") | авто-бюджет: \(fitsAutomatically(model, physicalMemory: ProcessInfo.processInfo.physicalMemory) ? "подходит по оценке" : "только явное назначение") | API тип: \(model.kind ?? "неизвестно") | по имени (не проверено): \(inferred.isEmpty ? "неизвестно" : inferred.joined(separator: ", "))"
         }.joined(separator: "\n")
     }
 }
 
 extension AppStore {
+    func specialistAssignments(configured: [String:String]? = nil) -> [String:String] {
+        ModelOrchestrator.effectiveAssignments(installed: models, configured: configured ?? preferences.modelRoles ?? [:], availableMemory: ModelOrchestrator.availableMemory())
+    }
     func configureModelRole(_ args: JSONValue) throws -> ToolOutcome {
         let role = try args.requiredString("role")
         let model = try args.requiredString("model_id")
@@ -106,12 +137,12 @@ extension AppStore {
     func delegateModel(_ args: JSONValue, chatID: UUID) async throws -> ToolOutcome {
         guard let i = index(chatID) else { throw CancellationError() }
         try ModelOrchestrator.validateEndpoint(preferences.lmEndpoint)
-        let request = try ModelOrchestrator.request(args, installed: models, assignments: ModelOrchestrator.effectiveAssignments(installed: models, configured: preferences.modelRoles ?? [:]))
-        let heavy = ["30b", "32b", "70b", "72b"].contains(where: request.model.lowercased().contains)
-        if heavy, ProcessInfo.processInfo.physicalMemory <= 24 * 1024 * 1024 * 1024,
+        let request = try ModelOrchestrator.request(args, installed: models, assignments: specialistAssignments())
+        if let descriptor = models.first(where: { $0.id == request.model }), !ModelOrchestrator.fitsAutomatically(descriptor, physicalMemory: ProcessInfo.processInfo.physicalMemory, availableMemory: ModelOrchestrator.availableMemory()),
            chats[i].model != request.model, !(preferences.modelRoles ?? [:]).values.contains(request.model) {
-            throw AgentError.message("Для автоматического делегирования на Mac с 24 ГБ выберите компактную модель 8–12B. Тяжёлая модель требует явного назначения пользователем в /models.")
+            throw AgentError.message("Оценка памяти модели превышает автоматический бюджет Mac (65% RAM). Выберите компактную модель или явно назначьте специалиста в /models")
         }
+        addMessage(.init(role: "tool", text: "Передаю специалисту: " + request.model, toolName: "routing", detail: "Причина основной модели: " + vault.redact(request.reason) + "\nОценка памяти по имени: " + (ModelOrchestrator.estimatedBytes(request.model).map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .memory) } ?? "неизвестна") + ". Основная модель проверит ответ.", status: "done"), to: chatID)
         let files = FileTools(paths: storage.paths)
         let paths = try request.imagePaths.map { try files.resolve($0, workingDirectory: chats[i].folder).path }
         let prepared = try await DocumentReader.prepare(attachments: paths.map { Attachment(path: $0, kind: "image") })

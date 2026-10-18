@@ -6,11 +6,13 @@ struct ToolExecutionLedger {
     struct Receipt { let output: String; let uncertain: Bool }
     private var receipts: [String: Receipt] = [:]
     private var reads: [String: Int] = [:]
-    private static let readsAllowed = Set(["list_files", "read_file", "search_files", "read_document", "web_search", "read_web_page", "list_tasks", "list_model_capabilities", "computer_snapshot", "show_file", "search_chats", "run_diagnostics"])
+    private static let readsAllowed = Set(["list_files", "read_file", "search_files", "read_document", "web_search", "read_web_page", "list_tasks", "list_model_capabilities", "computer_snapshot", "show_file", "search_chats", "run_diagnostics", "recover_changes", "verify_result"])
 
-    private static func isRead(_ call: ToolCall) -> Bool {
+    static func isRead(_ call: ToolCall) -> Bool {
         if readsAllowed.contains(call.name) { return true }
         guard let args = try? JSONValue.parse(call.arguments) else { return false }
+        if call.name == "manage_memory" { return ["list", "read", "history"].contains(args["action"].string ?? "") }
+        if call.name == "browser_action" { return ["tabs", "read"].contains(args["action"].string ?? "") }
         if call.name == "manage_skill" { return ["list", "read"].contains(args["action"].string ?? "") }
         if call.name == "http_request" { return ["GET", "HEAD"].contains((args["method"].string ?? "GET").uppercased()) }
         return false

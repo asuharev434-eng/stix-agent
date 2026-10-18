@@ -13,6 +13,7 @@ struct SlashCommandItem: Identifiable, Equatable {
 enum SlashCommands {
     static func items(plugins: [PluginConfig], canSteer: Bool, skills: [LocalSkill] = []) -> [SlashCommandItem] {
         var items: [SlashCommandItem] = [
+            .init(id: "doctor", command: "/doctor", title: "Проверить приложение", detail: "Сервисы, модели, права и место на диске", icon: "stethoscope"),
             .init(id: "image", command: "/image", title: "Создать или изменить картинку", detail: "Описание → локальный ComfyUI", icon: "photo", takesText: true),
             .init(id: "models", command: "/models", title: "Модели для задач", detail: "Назначить локальных специалистов", icon: "square.stack.3d.up"),
             .init(id: "compact", command: "/compact", title: "Сжать контекст", detail: "Сохранить рабочее резюме и освободить окно модели", icon: "arrow.down.right.and.arrow.up.left"),
@@ -29,6 +30,10 @@ enum SlashCommands {
             .init(id: "permissions", command: "/permissions", title: "Доступ к Mac", detail: "Системные разрешения", icon: "hand.raised"),
             .init(id: "help", command: "/help", title: "Справка", detail: "Как пользоваться агентом", icon: "questionmark.circle")
         ]
+        if canSteer { items += [
+            .init(id: "pause", command: "/pause", title: "Приостановить", detail: "Сохранить задачу для продолжения", icon: "pause"),
+            .init(id: "skip", command: "/skip", title: "Пропустить следующий шаг", detail: "Следующий вызов инструмента не выполнится", icon: "forward.end")
+        ] }
         if canSteer { items.insert(.init(id: "steer", command: "/steer", title: "Уточнить текущую задачу", detail: "Скорректировать следующие действия", icon: "text.bubble", takesText: true), at: 1) }
         items += plugins.map { plugin in
             let encoded = plugin.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? plugin.id

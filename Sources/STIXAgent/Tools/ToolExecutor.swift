@@ -14,6 +14,10 @@ extension AppStore {
         return list
     }
     func execute(_ call: ToolCall, chatID: UUID) async throws -> ToolOutcome {
+        let outcome = try await executeUnchecked(call, chatID: chatID)
+        return try await verifiedOutcome(outcome, call: call)
+    }
+    private func executeUnchecked(_ call: ToolCall, chatID: UUID) async throws -> ToolOutcome {
         try Task.checkCancellation()
         guard canPersist else { throw AgentError.message("Хранилище недоступно; действия остановлены до восстановления записи") }
         guard let i = index(chatID) else { throw CancellationError() }
@@ -73,6 +77,7 @@ extension AppStore {
             guard refs.values.allSatisfy({ id in preferences.secrets.contains(where: { $0.id == id }) }) else { throw AgentError.message("Неизвестная ссылка на секрет") }
             let environment = try CredentialEnvironment.resolve(refs, vault: vault)
             let result = try await processRunner.run(command: command, directory: folder, timeout: TimeInterval(min(max(args["timeout"].int ?? 120, 1), 600)), environment: environment)
+            recordVerification(.init(subject: "Команда терминала", passed: result.exitCode == 0 && !result.timedOut, detail: "Exit \(result.exitCode)\(result.timedOut ? " · timeout" : ""). Это статус команды; корректность результата требует проверки."))
             return .init(text: "Exit \(result.exitCode)\(result.timedOut ? " · timeout" : "")\n\(vault.redact(result.output))")
         case "ask_user":
             guard questionAllowed(chatID: chatID) else { return .init(text: "Лимит дополнительных вопросов исчерпан. Выполняй задачу с безопасными допущениями. Не задавай вопрос в обычном тексте вместо инструмента. Если безопасное действие невозможно — объясни причину и остановись.") }
@@ -248,7 +253,9 @@ extension AppStore {
         return .init(text: title, attachments: [.init(path: url.path, kind: kind)])
     }
     func undoAction(_ id: UUID, chatID: UUID, messageID: UUID) {
-        guard !undoing.contains(id), let record = undos[id] else { return }
+        guard canPersist, !busy, !undoing.contains(id), let record = undos[id] else { return }
+        recordHumanActionRequest("Отменить файловое действие: " + record.source, chatID: chatID)
+        guard canPersist else { return }
         undoing.insert(id)
         let paths = storage.paths
         Task {
@@ -257,8 +264,9 @@ extension AppStore {
                 let result = try await fileWork { try FileChangePlanner(paths: paths).undo(record) }
                 undos.removeValue(forKey: id)
                 editMessage(messageID, chatID: chatID) { $0.undoID = nil; $0.status = "undone" }
+                recordHumanActionResult(result, chatID: chatID)
                 addMessage(.init(role: "assistant", text: result), to: chatID)
-            } catch { self.error = vault.redact(error.localizedDescription) }
+            } catch { recordHumanActionResult("Отмена не завершена: " + vault.redact(error.localizedDescription), chatID: chatID); self.error = vault.redact(error.localizedDescription) }
         }
     }
 

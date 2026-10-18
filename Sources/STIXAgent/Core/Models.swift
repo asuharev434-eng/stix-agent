@@ -159,6 +159,7 @@ struct PersistedState: Codable {
     var jobs: [AgentJob]? = nil
     var memoryEntries: [MemoryEntry]? = nil
     var projects: [MemoryProject]? = nil
+    var memoryRevisions: [MemoryRevision]? = nil
 }
 
 struct PendingInteraction: Identifiable {

@@ -10,6 +10,8 @@ final class AppStore: ObservableObject {
     @Published var selectedID: UUID?
     @Published var preferences = AppPreferences()
     @Published var memoryEntries: [MemoryEntry] = []
+    @Published var memoryRevisions: [MemoryRevision] = []
+    @Published var requestSnapshots: [UUID: ContextRequestSnapshot] = [:]
     @Published var projects: [MemoryProject] = []
     @Published var models: [ModelDescriptor] = []
     @Published var skills: [LocalSkill] = []
@@ -48,7 +50,7 @@ final class AppStore: ObservableObject {
             if let state = try storage.load() {
                 jobs = state.jobs ?? []
                 for i in jobs.indices where ["running", "queued"].contains(jobs[i].status) { jobs[i].status = "interrupted" }
-                chats = state.chats; preferences = state.preferences; memoryEntries = state.memoryEntries ?? []; projects = state.projects ?? []; undos = Dictionary(uniqueKeysWithValues: state.undos.map { ($0.id, $0) })
+                chats = state.chats; preferences = state.preferences; memoryEntries = state.memoryEntries ?? []; projects = state.projects ?? []; memoryRevisions = state.memoryRevisions ?? []; undos = Dictionary(uniqueKeysWithValues: state.undos.map { ($0.id, $0) })
                 for i in chats.indices {
                     let legacyInterrupted = chats[i].messages.contains(where: { $0.status == "running" })
                     if legacyInterrupted, !jobs.contains(where: { $0.chatID == chats[i].id && ["interrupted", "paused", "running", "queued"].contains($0.status) }), let input = chats[i].messages.last(where: { $0.role == "user" }) {

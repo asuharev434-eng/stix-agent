@@ -13,7 +13,8 @@ struct MessageView: View {
     @State private var diffRecord: UndoRecord?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if message.role == "model_settings" { ModelSettingsCard(chatID: chatID) }
+            if message.role == "file_plan" { FilePlanCard(planID: message.text, chatID: chatID) }
+            else if message.role == "model_settings" { ModelSettingsCard(chatID: chatID) }
             else if message.role == "memory" { MemoryCard(chatID: chatID) }
             else if message.role == "skills" { SkillsCard() }
             else if message.role == "chat_search" { ChatSearchCard(initialQuery: message.text) }
