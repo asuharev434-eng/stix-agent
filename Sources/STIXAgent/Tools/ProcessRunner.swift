@@ -9,16 +9,17 @@ struct ProcessResult: Sendable {
 
 final class ProcessRunner: @unchecked Sendable {
     init() {}
-    func run(command: String, directory: String?, timeout: TimeInterval = 120) async throws -> ProcessResult {
+    func run(command: String, directory: String?, timeout: TimeInterval = 120, environment: [String: String] = [:]) async throws -> ProcessResult {
         guard timeout.isFinite, timeout > 0 else { throw AgentError.message("Некорректный таймаут") }
+        try CredentialEnvironment.validate(environment: environment)
         let state = RunState()
         return try await withTaskCancellationHandler(operation: {
             try await Task.detached {
-                try Self.execute(command: command, directory: directory, timeout: timeout, state: state)
+                try Self.execute(command: command, directory: directory, timeout: timeout, state: state, injectedEnvironment: environment)
             }.value
         }, onCancel: { state.cancel() })
     }
-    private static func execute(command: String, directory: String?, timeout: TimeInterval, state: RunState) throws -> ProcessResult {
+    private static func execute(command: String, directory: String?, timeout: TimeInterval, state: RunState, injectedEnvironment: [String: String]) throws -> ProcessResult {
         if state.cancelled { throw CancellationError() }
         var descriptors: [Int32] = [0, 0]
         guard pipe(&descriptors) == 0 else { throw POSIXError(.EIO) }
@@ -43,9 +44,10 @@ final class ProcessRunner: @unchecked Sendable {
         let arguments = ["/bin/zsh", "-lc", command].map { strdup($0) }
         defer { arguments.forEach { free($0) } }
         var argv = arguments + [nil]
-        let environment = ProcessInfo.processInfo.environment.filter { name, _ in
-            name.range(of: "(?i)(key|token|secret|password|credential)", options: .regularExpression) == nil
-        }.map { strdup("\($0.key)=\($0.value)") }
+        let safeNames: Set<String> = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "SHELL", "TERM"]
+        var childEnvironment = ProcessInfo.processInfo.environment.filter { safeNames.contains($0.key) }
+        childEnvironment.merge(injectedEnvironment) { _, new in new }
+        let environment = childEnvironment.map { strdup("\($0.key)=\($0.value)") }
         defer { environment.forEach { free($0) } }
         var envp = environment + [nil]
         var pid: pid_t = 0

@@ -25,7 +25,8 @@ struct LMStudioClient: Sendable {
         config.timeoutIntervalForResource = 600
         config.httpCookieStorage = nil
         config.urlCache = nil
-        return URLSession(configuration: config)
+        // A local endpoint must never forward prompts or images to a redirect target.
+        return URLSession(configuration: config, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }
 
     func models() async throws -> [ModelDescriptor] {
@@ -48,10 +49,17 @@ struct LMStudioClient: Sendable {
         })).sorted().map { ModelDescriptor(id: $0) }
     }
 
-    static func requestBody(model: String, messages: [LMMessage], tools: [ToolDefinition]) throws -> Data {
+    static func requestBody(model: String, messages: [LMMessage], tools: [ToolDefinition], thinking: Bool = false) throws -> Data {
         guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AgentError.message("Выберите модель LM Studio") }
         let wireMessages: [JSONValue] = messages.map { message in
-            var object: [String: JSONValue] = ["role": .string(message.role), "content": message.content.map(JSONValue.string) ?? .null]
+            var content: JSONValue = message.content.map(JSONValue.string) ?? .null
+            if let imageURLs = message.imageURLs, !imageURLs.isEmpty {
+                var parts: [JSONValue] = []
+                if let text = message.content, !text.isEmpty { parts.append(.object(["type": .string("text"), "text": .string(text)])) }
+                parts += imageURLs.map { .object(["type": .string("image_url"), "image_url": .object(["url": .string($0)])]) }
+                content = .array(parts)
+            }
+            var object: [String: JSONValue] = ["role": .string(message.role), "content": content]
             if let id = message.toolCallID { object["tool_call_id"] = .string(id) }
             if !message.toolCalls.isEmpty {
                 object["tool_calls"] = .array(message.toolCalls.map { call in
@@ -61,18 +69,19 @@ struct LMStudioClient: Sendable {
             return .object(object)
         }
         var body: [String: JSONValue] = ["model": .string(model), "messages": .array(wireMessages), "stream": .bool(true)]
+        if thinking { body["chat_template_kwargs"] = .object(["enable_thinking": .bool(true)]) }
         if !tools.isEmpty { body["tools"] = .array(tools.map(\.wire)); body["tool_choice"] = .string("auto") }
         let data = try JSONEncoder().encode(JSONValue.object(body))
         guard data.count <= 16_000_000 else { throw AgentError.message("Контекст слишком большой для LM Studio") }
         return data
     }
 
-    func complete(model: String, messages: [LMMessage], tools: [ToolDefinition], onText: @escaping @Sendable (String) async -> Void) async throws -> LMReply {
+    func complete(model: String, messages: [LMMessage], tools: [ToolDefinition], thinking: Bool = false, onReasoning: @escaping @Sendable (String) async -> Void = { _ in }, onText: @escaping @Sendable (String) async -> Void) async throws -> LMReply {
         var request = URLRequest(url: try url("/v1/chat/completions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.httpBody = try Self.requestBody(model: model, messages: messages, tools: tools)
+        request.httpBody = try Self.requestBody(model: model, messages: messages, tools: tools, thinking: thinking)
         let session = session()
         defer { session.invalidateAndCancel() }
         return try await withTaskCancellationHandler {
@@ -94,14 +103,17 @@ struct LMStudioClient: Sendable {
                     guard let string = String(data: line, encoding: .utf8) else { throw AgentError.message("LM Studio: неверная кодировка потока") }
                     line.removeAll(keepingCapacity: true)
                     if let text = try parser.consume(line: string) { await onText(text) }
+                    if thinking, !parser.reasoningDelta.isEmpty { await onReasoning(parser.reasoningDelta) }
                     if parser.done { break }
                 } else { line.append(byte) }
             }
             if !line.isEmpty {
                 guard let string = String(data: line, encoding: .utf8) else { throw AgentError.message("LM Studio: неверная кодировка потока") }
                 if let text = try parser.consume(line: string) { await onText(text) }
+                if thinking, !parser.reasoningDelta.isEmpty { await onReasoning(parser.reasoningDelta) }
             }
             if let text = try parser.consume(line: "") { await onText(text) }
+            if thinking, !parser.reasoningDelta.isEmpty { await onReasoning(parser.reasoningDelta) }
             try Task.checkCancellation()
             return try parser.reply()
         } onCancel: { session.invalidateAndCancel() }
@@ -121,11 +133,14 @@ struct LMStudioClient: Sendable {
 struct LMStreamParser {
     private var event: [String] = []
     private var content = ""
+    private var thinkingStream = ThinkingStream()
+    private(set) var reasoningDelta = ""
     private var calls: [Int: ToolCall] = [:]
     private var finished = false
     private(set) var done = false
 
     mutating func consume(line raw: String) throws -> String? {
+        reasoningDelta = ""
         let line = raw.hasSuffix("\r") ? String(raw.dropLast()) : raw
         guard !done else { return nil }
         if line.hasPrefix("data:") {
@@ -138,7 +153,7 @@ struct LMStreamParser {
         guard line.isEmpty, !event.isEmpty else { return nil }
         let payload = event.joined(separator: "\n")
         event.removeAll(keepingCapacity: true)
-        if payload == "[DONE]" { done = true; return nil }
+        if payload == "[DONE]" { done = true; return acceptContent("", finishing: true) }
         let json: JSONValue
         do { json = try JSONValue.parse(payload) } catch { throw AgentError.message("LM Studio: повреждённое событие JSON") }
         if json["error"] != .null {
@@ -161,8 +176,15 @@ struct LMStreamParser {
                 calls[index] = call
             }
         }
-        if let text = delta["content"].string { content += text; return text.isEmpty ? nil : text }
-        return nil
+        reasoningDelta = delta["reasoning_content"].string ?? delta["reasoning"].string ?? ""
+        return acceptContent(delta["content"].string ?? "", finishing: finished)
+    }
+
+    private mutating func acceptContent(_ chunk: String, finishing: Bool) -> String? {
+        let output = thinkingStream.consume(chunk, finishing: finishing)
+        reasoningDelta += output.reasoning
+        content += output.text
+        return output.text.isEmpty ? nil : output.text
     }
 
     func reply() throws -> LMReply {

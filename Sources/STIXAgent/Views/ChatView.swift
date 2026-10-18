@@ -4,44 +4,57 @@ import UniformTypeIdentifiers
 struct ChatView: View {
     @EnvironmentObject var store: AppStore
     @State private var visibility: NavigationSplitViewVisibility = .all
+    @State private var search = ""
+    private var visibleChats: [Chat] {
+        store.chats.filter { ChatTranscript.matches($0, query: search) }.sorted {
+            if ($0.pinned ?? false) != ($1.pinned ?? false) { return $0.pinned ?? false }
+            return $0.updatedAt > $1.updatedAt
+        }
+    }
     var body: some View {
         NavigationSplitView(columnVisibility: $visibility) {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Text("STIX").font(.system(size: 16, weight: .semibold)).tracking(2)
+                    Text("STIX").font(.system(size: store.textSize(16), weight: .semibold)).tracking(2)
                     Spacer()
-                    Button { store.newChat() } label: { Image(systemName: "square.and.pencil").font(.system(size: 16)).frame(width: 32, height: 32).contentShape(Circle()) }
+                    Button { store.newChat() } label: { Image(systemName: "square.and.pencil").font(.system(size: store.textSize(16))).frame(width: 32, height: 32).contentShape(Circle()) }
                         .buttonStyle(.plain).help("Новый чат · ⌘N").accessibilityLabel("Новый чат")
                 }.padding(.horizontal, 20).padding(.top, 21)
                 Button { store.chooseFiles(folderOnly: true, createChat: true) } label: {
-                    Label("Чат с папкой", systemImage: "folder.badge.plus").font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 14).padding(.vertical, 12)
+                    Label("Чат с папкой", systemImage: "folder.badge.plus").font(.system(size: store.textSize(13))).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 14).padding(.vertical, 12)
                 }.buttonStyle(.plain).agentGlass(cornerRadius: 16, interactive: true).padding(.horizontal, 14)
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Поиск по истории", text: $search).textFieldStyle(.plain)
+                    if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary) }
+                }.font(.system(size: store.textSize(12))).padding(11).agentCard(cornerRadius: 13).padding(.horizontal, 14)
                 ScrollView {
                     LazyVStack(spacing: 6) {
-                        ForEach(store.chats) { chat in
+                        ForEach(visibleChats) { chat in
                             SidebarChatRow(chat: chat)
                         }
+                        if visibleChats.isEmpty { Text("Ничего не найдено").font(.system(size: store.textSize(12))).foregroundStyle(.secondary).padding(.top, 16) }
                     }.padding(.horizontal, 14)
                 }
                 HStack(spacing: 7) {
                     Image(systemName: "desktopcomputer")
                     Text("Локально на этом Mac")
-                }.font(.system(size: 11)).tracking(0.2).foregroundStyle(.secondary).padding(18)
+                }.font(.system(size: store.textSize(11))).tracking(0.2).foregroundStyle(.secondary).padding(18)
             }.background(.ultraThinMaterial)
                 .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 300)
         } detail: {
             VStack(spacing: 0) {
                 HStack {
-                    Text(store.currentChat?.title ?? "Новый чат").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(store.currentChat?.title ?? "Новый чат").font(.system(size: store.textSize(13), weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
                     if let folder = store.currentChat?.folder {
-                        Button { NSWorkspace.shared.open(URL(fileURLWithPath: folder)) } label: { Label(URL(fileURLWithPath: folder).lastPathComponent, systemImage: "folder").lineLimit(1) }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
+                        Button { NSWorkspace.shared.open(URL(fileURLWithPath: folder)) } label: { Label(URL(fileURLWithPath: folder).lastPathComponent, systemImage: "folder").lineLimit(1) }.buttonStyle(.plain).font(.system(size: store.textSize(12))).foregroundStyle(.secondary)
                     }
                 }.padding(.horizontal, 28).frame(height: 50)
                 if let chat = store.currentChat {
                     ScrollViewReader { proxy in
                         ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 24) {
+                            LazyVStack(alignment: .leading, spacing: store.messageSpacing) {
                                 if chat.messages.isEmpty { emptyState }
                                 ForEach(chat.messages) { message in
                                     MessageView(message: message, chatID: chat.id).id(message.id)
@@ -56,8 +69,13 @@ struct ChatView: View {
                     }
                 }
                 if store.busy, store.activeChatID == store.selectedID {
-                    HStack(spacing: 8) { ProgressView().controlSize(.mini); Text(store.activity).font(.system(size: 12)).foregroundStyle(.secondary); Spacer() }.frame(maxWidth: 750).padding(.horizontal, 30).padding(.bottom, 10)
+                    if store.preferences.thinking == true && !store.reasoningText.isEmpty {
+                        reasoningCard
+                    } else {
+                        HStack(spacing: 8) { ProgressView().controlSize(.mini); Text(store.activity).font(.system(size: store.textSize(12))).foregroundStyle(.secondary); Spacer() }.frame(maxWidth: 750).padding(.horizontal, 30).padding(.bottom, 10)
+                    }
                 }
+                TaskQueueView().frame(maxWidth: 764).padding(.horizontal, 28)
                 ComposerView().frame(maxWidth: 820).padding(.horizontal, 28).padding(.bottom, 24)
             }.background(Color(nsColor: .windowBackgroundColor))
                 .onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
@@ -69,11 +87,32 @@ struct ChatView: View {
             Button("Понятно") { store.error = nil }
         } message: { Text(store.error ?? "") }
     }
+    private var reasoningCard: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                ProgressView().controlSize(.mini)
+                Text("Thinking").font(.system(size: store.textSize(11), weight: .medium))
+            }.foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(store.reasoningText).font(.system(size: store.textSize(12)))
+                            .foregroundStyle(.secondary).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Color.clear.frame(height: 1).id("reasoning-bottom")
+                    }
+                }.frame(maxHeight: 75)
+                    .onAppear { proxy.scrollTo("reasoning-bottom", anchor: .bottom) }
+                    .onChange(of: store.reasoningText) { _, _ in proxy.scrollTo("reasoning-bottom", anchor: .bottom) }
+            }
+        }.padding(12).frame(maxWidth: 740, maxHeight: 110, alignment: .leading)
+            .agentCard(cornerRadius: 16).padding(.horizontal, 30).padding(.bottom, 10)
+    }
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: "asterisk").font(.system(size: 26, weight: .medium)).frame(width: 62, height: 62).agentGlass(cornerRadius: 22).padding(.bottom, 10)
-            Text("Что сделаем?").font(.system(size: 32, weight: .medium)).tracking(-0.7)
-            Text("Файлы, небольшой код, повседневные задачи.\nВсё начинается с сообщения.").font(.system(size: 15)).foregroundStyle(.secondary).lineSpacing(5)
+            Image(systemName: "asterisk").font(.system(size: store.textSize(26), weight: .medium)).frame(width: 62, height: 62).agentGlass(cornerRadius: 22).padding(.bottom, 10)
+            Text("Что сделаем?").font(.system(size: store.textSize(32), weight: .medium)).tracking(-0.7)
+            Text("Файлы, небольшой код, повседневные задачи.\nВсё начинается с сообщения.").font(.system(size: store.textSize(15))).foregroundStyle(.secondary).lineSpacing(5)
             HStack(spacing: 8) {
                 suggestion("Разобрать папку", icon: "folder", prompt: "Помоги рассортировать файлы в папке")
                 suggestion("Написать скрипт", icon: "chevron.left.forwardslash.chevron.right", prompt: "Помоги написать небольшой скрипт")
@@ -82,7 +121,7 @@ struct ChatView: View {
         }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 70)
     }
     private func suggestion(_ label: String, icon: String, prompt: String) -> some View {
-        Button { store.draft = prompt } label: { Label(label, systemImage: icon).font(.system(size: 12)).padding(.horizontal, 14).padding(.vertical, 11) }
+        Button { store.draft = prompt } label: { Label(label, systemImage: icon).font(.system(size: store.textSize(12))).padding(.horizontal, 14).padding(.vertical, 11) }
             .buttonStyle(.plain).agentCard(cornerRadius: 15)
     }
 }
@@ -90,19 +129,67 @@ struct ChatView: View {
 private struct SidebarChatRow: View {
     @EnvironmentObject var store: AppStore
     let chat: Chat
+    @State private var renaming = false
+    @State private var title = ""
     var body: some View {
         Button { store.selectChat(chat.id) } label: {
             HStack(spacing: 9) {
-                Image(systemName: chat.folder == nil ? "bubble.left" : "folder").font(.system(size: 12)).foregroundStyle(.secondary)
-                Text(chat.title).font(.system(size: 13)).lineLimit(1)
+                Image(systemName: chat.pinned == true ? "pin.fill" : chat.folder == nil ? "bubble.left" : "folder").font(.system(size: store.textSize(12))).foregroundStyle(.secondary)
+                Text(chat.title).font(.system(size: store.textSize(13))).lineLimit(1)
                 Spacer(minLength: 0)
                 if chat.id == store.activeChatID { ProgressView().controlSize(.mini) }
             }.padding(.horizontal, 14).padding(.vertical, 11).contentShape(Rectangle())
         }.buttonStyle(.plain)
             .agentGlass(cornerRadius: 15, interactive: true, enabled: store.selectedID == chat.id)
             .contextMenu {
+                Button("Переименовать") { title = chat.title; renaming = true }
+                Button(chat.pinned == true ? "Открепить" : "Закрепить") { store.toggleChatPin(chat.id) }
+                Button("Экспортировать Markdown…") { store.exportChat(chat.id) }
+                Divider()
                 Button("Удалить чат", role: .destructive) { store.deleteChat(chat.id) }
                 if let folder = chat.folder { Button("Показать папку") { NSWorkspace.shared.open(URL(fileURLWithPath: folder)) } }
             }
+            .alert("Название чата", isPresented: $renaming) {
+                TextField("Название", text: $title)
+                Button("Сохранить") { store.renameChat(chat.id, title: title) }
+                Button("Отмена", role: .cancel) { }
+            }
+    }
+}
+
+private struct TaskQueueView: View {
+    @EnvironmentObject var store: AppStore
+    private var jobs: [AgentJob] {
+        let current = store.jobs.filter { $0.chatID == store.selectedID }
+        let active = current.filter { ["queued", "running", "paused", "interrupted"].contains($0.status) }
+        let completed = current.filter { $0.status == "done" && !($0.undoIDs ?? []).isEmpty }.suffix(3)
+        return active + completed
+    }
+    var body: some View {
+        if !jobs.isEmpty {
+            ScrollView {
+              VStack(alignment: .leading, spacing: 9) {
+                ForEach(jobs) { job in
+                    HStack(spacing: 10) {
+                        Image(systemName: job.status == "running" ? "circle.dotted" : job.status == "queued" ? "clock" : job.status == "done" ? "checkmark.circle" : "pause.circle").foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(job.prompt.isEmpty ? "Задача с вложениями" : job.prompt).lineLimit(1)
+                            Text(["queued": "В очереди", "running": "Выполняется", "paused": "Приостановлена", "interrupted": "Прервана", "done": "Готово"][job.status] ?? job.status).foregroundStyle(.secondary).font(.system(size: store.textSize(10)))
+                        }
+                        Spacer(minLength: 3)
+                        if !(job.undoIDs ?? []).isEmpty && ["done", "paused", "interrupted"].contains(job.status) {
+                            Button { store.undoJob(job.id) } label: { Image(systemName: "arrow.uturn.backward") }.help("Отменить все изменения задачи")
+                        }
+                        if job.status == "running" {
+                            Button { store.pauseTask() } label: { Image(systemName: "pause.fill") }.help("Приостановить задачу")
+                        } else if ["paused", "interrupted"].contains(job.status) {
+                            Button { store.resumeJob(job.id) } label: { Image(systemName: "play.fill") }.help("Продолжить задачу")
+                        }
+                        if job.status != "done" { Button { store.cancelJob(job.id) } label: { Image(systemName: "xmark") }.help("Отменить задачу") }
+                    }.buttonStyle(.borderless).font(.system(size: store.textSize(12)))
+                }
+              }.padding(12)
+            }.frame(maxHeight: min(150, CGFloat(jobs.count) * 52)).agentCard(cornerRadius: 16).padding(.bottom, 10)
+        }
     }
 }

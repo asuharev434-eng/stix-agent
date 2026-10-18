@@ -4,6 +4,8 @@ import ApplicationServices
 
 @MainActor
 final class AppStore: ObservableObject {
+    @Published var jobs: [AgentJob] = []
+    var activeJobID: UUID?
     @Published var chats: [Chat] = []
     @Published var selectedID: UUID?
     @Published var preferences = AppPreferences()
@@ -13,12 +15,15 @@ final class AppStore: ObservableObject {
     @Published var attachments: [Attachment] = []
     @Published var busy = false
     @Published var activity = ""
+    @Published var reasoningText = ""
+    var transientReasoning = ""
     @Published var pending: PendingInteraction?
     @Published var error: String?
     @Published var pluginTools: [String: [ToolDefinition]] = [:]
     let storage: StateStorage
     let vault = SecretVault()
     let processRunner = ProcessRunner()
+    lazy var computerTools = ComputerTools(captureDirectory: storage.paths.attachments)
     var plugins: [String: MCPClient] = [:]
     var activeChatID: UUID?
     var task: Task<Void, Never>?
@@ -33,8 +38,14 @@ final class AppStore: ObservableObject {
         self.storage = storage
         do {
             if let state = try storage.load() {
+                jobs = state.jobs ?? []
+                for i in jobs.indices where ["running", "queued"].contains(jobs[i].status) { jobs[i].status = "interrupted" }
                 chats = state.chats; preferences = state.preferences; undos = Dictionary(uniqueKeysWithValues: state.undos.map { ($0.id, $0) })
                 for i in chats.indices {
+                    let legacyInterrupted = chats[i].messages.contains(where: { $0.status == "running" })
+                    if legacyInterrupted, !jobs.contains(where: { $0.chatID == chats[i].id && ["interrupted", "paused", "running", "queued"].contains($0.status) }), let input = chats[i].messages.last(where: { $0.role == "user" }) {
+                        jobs.append(.init(chatID: chats[i].id, prompt: input.text, attachments: input.attachments, status: "interrupted", started: true, inputRecorded: !chats[i].history.isEmpty, sourceMessageID: input.id))
+                    }
                     for j in chats[i].messages.indices where chats[i].messages[j].status == "running" {
                         chats[i].messages[j].status = "interrupted"
                         chats[i].messages[j].text += "\nПрервано при закрытии приложения."
@@ -61,7 +72,7 @@ final class AppStore: ObservableObject {
     func index(_ id: UUID) -> Int? { chats.firstIndex { $0.id == id } }
     func save() {
         guard canPersist else { return }
-        do { try storage.save(.init(chats: chats, preferences: preferences, undos: Array(undos.values))) }
+        do { try storage.save(.init(chats: chats, preferences: preferences, undos: Array(undos.values), jobs: jobs)) }
         catch { self.error = "История не сохранена: \(error.localizedDescription)" }
     }
     func newChat(folder: URL? = nil) {
@@ -71,6 +82,7 @@ final class AppStore: ObservableObject {
     func selectChat(_ id: UUID) { selectedID = id; draft = ""; attachments = [] }
     func deleteChat(_ id: UUID) {
         guard id != activeChatID else { error = "Сначала остановите текущую задачу"; return }
+        for i in jobs.indices where jobs[i].chatID == id { jobs[i].status = "cancelled" }
         chats.removeAll { $0.id == id }
         if selectedID == id { selectedID = chats.first?.id }
         if chats.isEmpty { newChat() }; save()
@@ -188,9 +200,12 @@ final class AppStore: ObservableObject {
         AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
     }
     func openDiskAccess() { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") { NSWorkspace.shared.open(url) } }
+    func openScreenAccess() { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) } }
     func activatePlugin(_ config: PluginConfig) async throws {
         if let old = plugins[config.id] { await old.close() }
-        let client = MCPClient(config: config)
+        let references = preferences.pluginEnvironment?[config.id] ?? [:]
+        let environment = try CredentialEnvironment.resolve(references, vault: vault)
+        let client = MCPClient(config: config, environment: environment)
         let tools = try await client.tools()
         plugins[config.id] = client; pluginTools[config.id] = tools
     }

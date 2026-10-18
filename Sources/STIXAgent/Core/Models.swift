@@ -55,6 +55,8 @@ struct LMMessage: Codable, Equatable, Sendable {
     var content: String?
     var toolCalls: [ToolCall] = []
     var toolCallID: String? = nil
+    var imageURLs: [String]? = nil
+    var sourceMessageID: UUID? = nil
 }
 struct ToolDefinition: Sendable {
     let name: String
@@ -64,7 +66,7 @@ struct ToolDefinition: Sendable {
 }
 struct LMReply: Sendable { var content: String; var toolCalls: [ToolCall] }
 
-struct Attachment: Codable, Equatable, Identifiable {
+struct Attachment: Codable, Equatable, Identifiable, Sendable {
     var id = UUID()
     var path: String
     var kind: String // file, image, folder, html, mermaid
@@ -87,9 +89,13 @@ struct Chat: Codable, Identifiable {
     var folder: String? = nil
     var model = ""
     var imageModel = "sd_xl_base_1.0.safetensors"
+    var imagePromptModel: String? = nil
+    var imagePromptLanguage: String? = nil
     var messages: [ChatMessage] = []
     var history: [LMMessage] = []
     var updatedAt = Date()
+    var pinned: Bool? = nil
+    var questionLevel: Int? = nil
 }
 struct APIConnection: Codable, Identifiable, Equatable {
     var id: String
@@ -126,8 +132,15 @@ struct AppPreferences: Codable {
     var maxToolRounds = 40
     var imageProfiles: [ImageWorkflowProfile] = []
     var secrets: [SecretReference] = []
+    var thinking: Bool? = nil
+    var questionLevel: Int? = nil
+    var fontSize: Double? = nil
+    var spacing: Double? = nil
+    var memory: [String]? = nil
+    var modelRoles: [String: String]? = nil
+    var pluginEnvironment: [String: [String: String]]? = nil
 }
-struct PersistedState: Codable { var version = 1; var chats: [Chat]; var preferences: AppPreferences; var undos: [UndoRecord] = [] }
+struct PersistedState: Codable { var version = 1; var chats: [Chat]; var preferences: AppPreferences; var undos: [UndoRecord] = []; var jobs: [AgentJob]? = nil }
 
 struct PendingInteraction: Identifiable {
     enum Kind { case question, approval, secret, permissions }
@@ -139,7 +152,7 @@ struct PendingInteraction: Identifiable {
     var scope: String? = nil
 }
 enum InteractionAnswer { case text(String), once, task, always, deny }
-struct UndoRecord: Codable, Identifiable {
+struct UndoRecord: Codable, Identifiable, Sendable {
     var id = UUID()
     var kind: String
     var source: String

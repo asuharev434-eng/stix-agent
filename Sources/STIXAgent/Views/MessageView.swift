@@ -7,26 +7,28 @@ struct MessageView: View {
     let message: ChatMessage
     let chatID: UUID
     @State private var preview: URL?
+    @State private var editing = false
+    @State private var editedText = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if message.role == "permissions" { PermissionsCard() }
             else if message.role == "tool" {
                 DisclosureGroup {
-                    if let detail = message.detail { Text(detail).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled).padding(.vertical, 6) }
+                    if let detail = message.detail { Text(detail).font(.system(size: store.textSize(11), design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled).padding(.vertical, 6) }
                     MarkdownMessageBody(text: message.text)
                 } label: {
                     HStack(spacing: 8) {
                         if message.status == "running" { ProgressView().controlSize(.mini) }
                         else { Image(systemName: message.status == "error" ? "exclamationmark.circle" : "checkmark.circle").foregroundStyle(message.status == "error" ? Color.orange : Color.secondary) }
-                        Text(store.displayToolName(message.toolName ?? "Действие")).font(.system(size: 12, weight: .medium))
+                        Text(store.displayToolName(message.toolName ?? "Действие")).font(.system(size: store.textSize(12), weight: .medium))
                         Spacer()
-                        Text(["done": "Готово", "running": "Выполняется", "error": "Ошибка", "undone": "Отменено", "interrupted": "Прервано"][message.status ?? ""] ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(["done": "Готово", "running": "Выполняется", "error": "Ошибка", "undone": "Отменено", "interrupted": "Прервано"][message.status ?? ""] ?? "").font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
                     }
                 }.padding(16).agentCard()
             } else if message.role == "user" {
                 HStack {
                     Spacer(minLength: 45)
-                    Text(message.text).font(.system(size: 14)).textSelection(.enabled).padding(.horizontal, 17).padding(.vertical, 12)
+                    Text(message.text).font(.system(size: store.textSize(14))).textSelection(.enabled).padding(.horizontal, 17).padding(.vertical, 12)
                         .background(.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
             } else { MarkdownMessageBody(text: message.text) }
@@ -40,8 +42,11 @@ struct MessageView: View {
                         }
                         HStack(spacing: 10) {
                             Image(nsImage: NSWorkspace.shared.icon(forFile: attachment.path)).resizable().frame(width: 30, height: 30)
-                            Text(attachment.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            Text(attachment.name).font(.system(size: store.textSize(12), weight: .medium)).lineLimit(1)
                             Spacer()
+                            if attachment.kind == "image" {
+                                Button { store.selectChat(chatID); store.attachments = [attachment]; store.draft = "/image " } label: { Label("Редактировать", systemImage: "slider.horizontal.3") }.help("Описать изменения этой картинки")
+                            }
                             Button { preview = URL(fileURLWithPath: attachment.path) } label: { Image(systemName: "eye") }.help("Быстрый просмотр")
                             Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: attachment.path)]) } label: { Image(systemName: "folder") }.help("Показать в Finder")
                             Button { NSWorkspace.shared.open(URL(fileURLWithPath: attachment.path)) } label: { Image(systemName: "arrow.up.forward.square") }.help("Открыть")
@@ -50,13 +55,44 @@ struct MessageView: View {
                 }
             }
             if let id = message.undoID {
-                Button { store.undoAction(id, chatID: chatID, messageID: message.id) } label: { Label("Отменить действие", systemImage: "arrow.uturn.backward") }.buttonStyle(.borderless).font(.system(size: 12)).disabled(store.busy)
+                Button { store.undoAction(id, chatID: chatID, messageID: message.id) } label: { Label("Отменить действие", systemImage: "arrow.uturn.backward") }.buttonStyle(.borderless).font(.system(size: store.textSize(12))).disabled(store.busy)
             }
         }.frame(maxWidth: .infinity, alignment: .leading).quickLookPreview($preview)
+            .contextMenu {
+                Button("Копировать") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) }
+                if message.role == "user" {
+                    Button("Изменить и отправить в новой ветке…") { editedText = message.text; editing = true }
+                        .disabled(store.activeChatID == chatID)
+                    Button("Повторить в новой ветке") { store.branchMessage(chatID: chatID, messageID: message.id) }
+                        .disabled(store.activeChatID == chatID)
+                } else if message.role == "assistant", let user = previousUserMessage {
+                    Button("Сгенерировать заново в новой ветке") { store.branchMessage(chatID: chatID, messageID: user.id) }
+                        .disabled(store.activeChatID == chatID)
+                }
+            }
+            .sheet(isPresented: $editing) {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Изменить сообщение").font(.headline)
+                    Text("Продолжение сохранится в новом чате. Исходная переписка останется в истории.").foregroundStyle(.secondary)
+                    TextEditor(text: $editedText).font(.system(size: store.textSize(14))).frame(minHeight: 140).padding(8).agentCard(cornerRadius: 12)
+                    HStack {
+                        Button("Отмена") { editing = false }.keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button("Создать ветку и отправить") { store.branchMessage(chatID: chatID, messageID: message.id, replacement: editedText); editing = false }
+                            .keyboardShortcut(.defaultAction).disabled(editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && message.attachments.isEmpty)
+                    }
+                }.padding(24).frame(width: 550)
+            }
+    }
+    private var previousUserMessage: ChatMessage? {
+        guard let messages = store.chats.first(where: { $0.id == chatID })?.messages,
+              let index = messages.firstIndex(where: { $0.id == message.id }) else { return nil }
+        return messages.prefix(index).last(where: { $0.role == "user" })
     }
 }
 
 struct MarkdownMessageBody: View {
+    @EnvironmentObject var store: AppStore
     let text: String
     @Environment(\.colorScheme) private var colorScheme
     private struct Block: Identifiable { let id: Int; let code: Bool; let language: String; let text: String }
@@ -77,9 +113,9 @@ struct MarkdownMessageBody: View {
                     IsolatedArtifactWebView(source: block.text, mermaid: true, dark: colorScheme == .dark).frame(height: 340).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 } else if block.code {
                     VStack(alignment: .leading, spacing: 0) {
-                        HStack { Text(block.language.isEmpty ? "Код" : block.language).foregroundStyle(.secondary); Spacer(); Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(block.text, forType: .string) } label: { Label("Копировать", systemImage: "doc.on.doc") }.buttonStyle(.borderless) }.font(.system(size: 11)).padding(10)
+                        HStack { Text(block.language.isEmpty ? "Код" : block.language).foregroundStyle(.secondary); Spacer(); Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(block.text, forType: .string) } label: { Label("Копировать", systemImage: "doc.on.doc") }.buttonStyle(.borderless) }.font(.system(size: store.textSize(11))).padding(10)
                         Divider()
-                        ScrollView(.horizontal) { Text(block.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).padding(13).frame(maxWidth: .infinity, alignment: .leading) }
+                        ScrollView(.horizontal) { Text(block.text).font(.system(size: store.textSize(12), design: .monospaced)).textSelection(.enabled).padding(13).frame(maxWidth: .infinity, alignment: .leading) }
                     }.agentCard(cornerRadius: 18).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
@@ -94,12 +130,12 @@ struct MarkdownMessageBody: View {
     @ViewBuilder private func markdownLine(_ line: String) -> some View {
         let hashes = line.prefix { $0 == "#" }.count
         if (1...6).contains(hashes), line.dropFirst(hashes).hasPrefix(" ") {
-            rich(String(line.dropFirst(hashes + 1))).font(.system(size: hashes == 1 ? 24 : hashes == 2 ? 20 : 16, weight: .semibold)).padding(.top, 7)
+            rich(String(line.dropFirst(hashes + 1))).font(.system(size: store.textSize(hashes == 1 ? 24 : hashes == 2 ? 20 : 16), weight: .semibold)).padding(.top, 7)
         } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-            HStack(alignment: .top, spacing: 9) { Text("•"); rich(String(line.dropFirst(2))) }.font(.system(size: 14)).padding(.leading, 4)
+            HStack(alignment: .top, spacing: 9) { Text("•"); rich(String(line.dropFirst(2))) }.font(.system(size: store.textSize(14))).padding(.leading, 4)
         } else if line.hasPrefix("> ") {
             HStack { Rectangle().fill(.secondary.opacity(0.3)).frame(width: 3); rich(String(line.dropFirst(2))).foregroundStyle(.secondary) }.fixedSize(horizontal: false, vertical: true)
-        } else { rich(line.isEmpty ? " " : line).font(.system(size: 14)).lineSpacing(4) }
+        } else { rich(line.isEmpty ? " " : line).font(.system(size: store.textSize(14))).lineSpacing(4) }
     }
     private func rich(_ value: String) -> Text {
         Text((try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value))

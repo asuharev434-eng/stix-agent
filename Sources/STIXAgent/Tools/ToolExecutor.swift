@@ -4,7 +4,7 @@ struct ToolOutcome { var text: String; var attachments: [Attachment] = []; var u
 
 extension AppStore {
     func allTools() -> [ToolDefinition] {
-        var list = ToolCatalog.builtins
+        var list = ToolCatalog.builtins + ExtendedToolCatalog.definitions + ModelOrchestrator.definitions + ComputerTools.definitions
         for (id, tools) in pluginTools {
             for tool in tools {
                 list.append(.init(name: ApprovalPolicy.pluginToolName(pluginID: id, name: tool.name), description: "MCP \(tool.name): \(tool.description)", parameters: tool.parameters))
@@ -50,14 +50,14 @@ extension AppStore {
             guard let content = args["content"].string, content.utf8.count <= 2_000_000 else { throw AgentError.message("Недопустимое содержимое файла (максимум 2 МБ)") }
             let safeContent = vault.redact(content)
             let record = try await fileWork { try files.write(path: args.requiredString("path"), content: safeContent, workingDirectory: folder) }
-            undos[record.id] = record
+            registerUndo(record)
             return .init(text: "Файл сохранён: \(record.source)", attachments: [.init(path: record.source, kind: "file")], undo: record)
         case "move_file":
             let record = try await fileWork { try files.move(source: args.requiredString("source"), destination: args.requiredString("destination"), workingDirectory: folder) }
-            undos[record.id] = record; return .init(text: "Перемещено: \(record.source) → \(record.destination ?? "")", undo: record)
+            registerUndo(record); return .init(text: "Перемещено: \(record.source) → \(record.destination ?? "")", undo: record)
         case "trash_file":
             let record = try await fileWork { try files.trash(path: args.requiredString("path"), workingDirectory: folder) }
-            undos[record.id] = record; return .init(text: "Перемещено в Корзину: \(record.source)", undo: record)
+            registerUndo(record); return .init(text: "Перемещено в Корзину: \(record.source)", undo: record)
         case "run_shell":
             let command = try args.requiredString("command")
             guard command.utf8.count <= 30000 else { throw AgentError.message("Команда слишком длинная") }
@@ -66,9 +66,13 @@ extension AppStore {
             permissionArguments["working_directory"] = .string(canonicalFolder)
             let taskScope = ApprovalPolicy.scope(tool: "run_shell_task", arguments: .object(["directory": .string(canonicalFolder)]))
             try await approve(tool: call.name, arguments: .object(permissionArguments), title: "Выполнить команду?", detail: "Папка: " + canonicalFolder + "\n" + command + "\n\n«Для этой задачи» разрешает последующие команды терминала в этой рабочей папке до завершения задачи. «Всегда» относится только к этой точной команде.", chatID: chatID, taskScope: taskScope)
-            let result = try await processRunner.run(command: command, directory: folder, timeout: TimeInterval(min(max(args["timeout"].int ?? 120, 1), 600)))
+            let refs = try JSONDecoder().decode([String: String].self, from: Data((args["environment_json"].string ?? "{}").utf8))
+            guard refs.values.allSatisfy({ id in preferences.secrets.contains(where: { $0.id == id }) }) else { throw AgentError.message("Неизвестная ссылка на секрет") }
+            let environment = try CredentialEnvironment.resolve(refs, vault: vault)
+            let result = try await processRunner.run(command: command, directory: folder, timeout: TimeInterval(min(max(args["timeout"].int ?? 120, 1), 600)), environment: environment)
             return .init(text: "Exit \(result.exitCode)\(result.timedOut ? " · timeout" : "")\n\(vault.redact(result.output))")
         case "ask_user":
+            guard questionAllowed(chatID: chatID) else { return .init(text: "Лимит дополнительных вопросов исчерпан. Выполняй задачу с безопасными допущениями. Не задавай вопрос в обычном тексте вместо инструмента. Если безопасное действие невозможно — объясни причину и остановись.") }
             let question = try args.requiredString("question")
             let options = args["options"].string?.split(separator: "|").map(String.init) ?? []
             let response = await interact(.init(kind: .question, title: question, detail: "", choices: Array(options.prefix(8))), chatID: chatID)
@@ -92,7 +96,11 @@ extension AppStore {
             guard let connection = preferences.connections.first(where: { $0.id == id }) else { throw AgentError.message("Подключение не найдено") }
             if action == "replace_secret" {
                 guard connection.auth != "none" else { throw AgentError.message("Подключение не использует ключ") }
-                try await collectSecret(id: id, label: "Новый ключ для \(connection.name)", detail: "Старый ключ будет заменён в Keychain. Значение не попадёт в чат.", chatID: chatID)
+                if connection.auth == "oauth" {
+                    let config = try OAuthConfiguration.load(directory: connection.documentationPath)
+                    try await approve(tool: "oauth_reauthorize", arguments: args, title: "Повторно войти в \(connection.name)?", detail: config.authorizationEndpoint, chatID: chatID)
+                    try await OAuthClient.shared.authorize(configuration: config, credentialID: id, vault: vault)
+                } else { try await collectSecret(id: id, label: "Новый ключ для \(connection.name)", detail: "Старый ключ будет заменён в Keychain. Значение не попадёт в чат.", chatID: chatID) }
             } else if action == "remove" {
                 try vault.remove(id); preferences.connections.removeAll { $0.id == id }; save()
             } else { throw AgentError.message("Действие: remove или replace_secret") }
@@ -131,6 +139,7 @@ extension AppStore {
             else { preferences.alwaysApprovals.remove(scope); taskApprovals.remove(scope) }
             save(); return .init(text: "Разрешения отозваны")
         default:
+            if let result = try await executeExtended(call.name, args: args, chatID: chatID, folder: folder) { return result }
             for (id, definitions) in pluginTools {
                 if let definition = definitions.first(where: { ApprovalPolicy.pluginToolName(pluginID: id, name: $0.name) == call.name }), let client = plugins[id] {
                     try await approve(tool: call.name, arguments: args, title: "Действие плагина", detail: "\(definition.name)\n\(args.encoded)", chatID: chatID)
@@ -150,6 +159,14 @@ extension AppStore {
         case "default_model":
             guard models.contains(where: { $0.id == value }) else { throw AgentError.message("Модель не найдена в LM Studio") }
             preferences.defaultModel = value; if let i = index(chatID) { chats[i].model = value }
+        case "image_prompt_language":
+            guard ["auto", "en", "ru", "zh", "ja"].contains(value) else { throw AgentError.message("Язык промпта: auto/en/ru/zh/ja") }; if let i = index(chatID) { chats[i].imagePromptLanguage = value }
+        case "font_size":
+            guard let number = Double(value), number.isFinite, (11...24).contains(number) else { throw AgentError.message("Размер шрифта: 11–24") }; preferences.fontSize = number
+        case "spacing":
+            guard let number = Double(value), number.isFinite, (12...48).contains(number) else { throw AgentError.message("Отступы: 12–48") }; preferences.spacing = number
+        case "question_level":
+            guard let number = Int(value), (0...4).contains(number) else { throw AgentError.message("Уровень вопросов: 0–4") }; preferences.questionLevel = number; if let i = index(chatID) { chats[i].questionLevel = number }
         case "working_directory":
             let url = URL(fileURLWithPath: NSString(string: value).expandingTildeInPath)
             var isDir: ObjCBool = false
@@ -167,7 +184,7 @@ extension AppStore {
     func connectAPI(_ args: JSONValue, chatID: UUID) async throws -> ToolOutcome {
         let name = try args.requiredString("name"), base = try args.requiredString("base_url"), auth = try args.requiredString("auth")
         _ = try ApprovalPolicy.validateEndpoint(base)
-        guard ["bearer", "header", "basic", "none"].contains(auth) else { throw AgentError.message("Неизвестный тип авторизации") }
+        guard ["bearer", "header", "basic", "none", "oauth"].contains(auth) else { throw AgentError.message("Неизвестный тип авторизации") }
         let header = args["header_name"].string ?? "X-API-Key"
         guard header.range(of: #"^[A-Za-z][A-Za-z0-9-]{0,63}$"#, options: .regularExpression) != nil,
               !["host", "content-length", "connection", "cookie"].contains(header.lowercased()) else { throw AgentError.message("Недопустимое имя заголовка") }
@@ -175,7 +192,13 @@ extension AppStore {
         let id = UUID().uuidString.lowercased()
         let directory = storage.paths.documentation.appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        if auth != "none" { try await collectSecret(id: id, label: "Ключ для \(name)", detail: "Адрес: \(base)\n\(auth == "basic" ? "Введите username:password" : "Введите API-ключ"). Значение не будет отправлено модели.", chatID: chatID) }
+        if auth == "oauth" {
+            let config = OAuthConfiguration(authorizationEndpoint: try args.requiredString("authorization_url"), tokenEndpoint: try args.requiredString("token_url"), clientID: try args.requiredString("client_id"), scopes: (args["scopes"].string ?? "").split(separator: " ").map(String.init))
+            try config.validate()
+            try await approve(tool: "oauth_authorize", arguments: args, title: "Войти через OAuth?", detail: "Сервис: \(base)\nАвторизация: \(config.authorizationEndpoint)\nToken endpoint: \(config.tokenEndpoint)\nПрава: \(config.scopes.joined(separator: ", "))", chatID: chatID)
+            try JSONEncoder().encode(config).write(to: directory.appendingPathComponent("oauth.json"), options: .atomic)
+            try await OAuthClient.shared.authorize(configuration: config, credentialID: id, vault: vault)
+        } else if auth != "none" { try await collectSecret(id: id, label: "Ключ для \(name)", detail: "Адрес: \(base)\n\(auth == "basic" ? "Введите username:password" : "Введите API-ключ"). Значение не будет отправлено модели.", chatID: chatID) }
         let connection = APIConnection(id: id, name: name, baseURL: base, auth: auth, headerName: header, documentationPath: directory.path)
         preferences.connections.append(connection); save()
         return .init(text: "Подключено: \(name)\nconnection_id: \(id)\nДокументацию API положите в: \(directory.path)", attachments: [.init(path: directory.path, kind: "folder")])

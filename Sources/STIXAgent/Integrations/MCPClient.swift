@@ -4,6 +4,7 @@ import Darwin
 /// A single MCP session. Each configured plugin owns its own process or HTTP session.
 actor MCPClient {
     private let config: PluginConfig
+    private let environment: [String: String]
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -21,7 +22,8 @@ actor MCPClient {
     static let maximumBytes = 4 * 1024 * 1024
     private let timeout: UInt64 = 30_000_000_000
 
-    init(config: PluginConfig) {
+    init(config: PluginConfig, environment: [String: String] = [:]) {
+        self.environment = environment
         self.config = config
         let settings = URLSessionConfiguration.ephemeral
         settings.timeoutIntervalForRequest = 30
@@ -169,6 +171,7 @@ actor MCPClient {
     private func startProcess() throws {
         if process != nil { return }
         guard !config.command.isEmpty, !config.command.contains("\0"), config.arguments.allSatisfy({ !$0.contains("\0") }) else { throw failure("Invalid executable") }
+        try CredentialEnvironment.validate(environment: environment)
         let child = Process()
         if config.command.hasPrefix("/") {
             child.executableURL = URL(fileURLWithPath: config.command)
@@ -181,6 +184,7 @@ actor MCPClient {
         // Never forward API credentials from the parent application's environment.
         let inherited = ProcessInfo.processInfo.environment
         child.environment = Dictionary(uniqueKeysWithValues: ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"].compactMap { key in inherited[key].map { (key, $0) } })
+        child.environment?.merge(environment) { _, explicit in explicit }
         let stdinPipe = Pipe(), stdoutPipe = Pipe(), stderrPipe = Pipe()
         child.standardInput = stdinPipe; child.standardOutput = stdoutPipe; child.standardError = stderrPipe
         input = stdinPipe.fileHandleForWriting

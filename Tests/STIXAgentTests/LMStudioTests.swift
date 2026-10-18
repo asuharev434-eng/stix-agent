@@ -7,6 +7,18 @@ final class LMStudioTests: XCTestCase {
         return try parser.consume(line: "")
     }
 
+    func testMultimodalContentAndLegacyTextEncoding() throws {
+        let messages = [LMMessage(role: "user", content: "Read image", imageURLs: ["data:image/jpeg;base64,YWJj"]), LMMessage(role: "user", content: "Only text")]
+        let data = try LMStudioClient.requestBody(model: "local", messages: messages, tools: [])
+        let json = try JSONDecoder().decode(JSONValue.self, from: data)
+        let wire = try XCTUnwrap(json["messages"].array)
+        let parts = try XCTUnwrap(wire[0]["content"].array)
+        XCTAssertEqual(parts[0]["text"].string, "Read image")
+        XCTAssertEqual(parts[1]["type"].string, "image_url")
+        XCTAssertEqual(parts[1]["image_url"]["url"].string, "data:image/jpeg;base64,YWJj")
+        XCTAssertEqual(wire[1]["content"].string, "Only text")
+    }
+
     func testFragmentsAndInterleavedCalls() throws {
         var parser = LMStreamParser()
         _ = try event(#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"b","function":{"name":"read","arguments":"{"}},{"index":0,"id":"a","function":{"name":"li","arguments":"{}"}}]}}]}"#, into: &parser)

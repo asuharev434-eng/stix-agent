@@ -78,7 +78,7 @@ final class CoreTests: XCTestCase {
         store.draft = "/help"; store.send()
         XCTAssertTrue(store.currentChat?.messages.last?.text.contains("/image") == true)
     }
-    @MainActor func testImageCommandBypassesLanguageModelEvenWhenComfyUnavailable() async throws {
+    @MainActor func testImageCommandUsesDedicatedPipelineWithoutAgentTools() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = AppStore(storage: .init(paths: .init(root: root)))

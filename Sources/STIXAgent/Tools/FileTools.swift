@@ -96,7 +96,7 @@ struct FileTools {
         // Resolve once more after directory creation to catch an unexpected protected target.
         _ = try resolve(url.path, workingDirectory: nil)
         try data.write(to: url, options: .atomic)
-        return UndoRecord(kind: "write", source: url.path, backup: backup, expectedDigest: try digest(url))
+        return UndoRecord(kind: "write", source: url.path, backup: backup, expectedDigest: try digest(url, checkCancellation: false))
     }
     func move(source: String, destination: String, workingDirectory: String?) throws -> UndoRecord {
         let from = try resolve(source, workingDirectory: workingDirectory)
@@ -147,7 +147,7 @@ struct FileTools {
                 let trashURL = URL(fileURLWithPath: destination).standardizedFileURL
                 let trashRoot = fm.urls(for: .trashDirectory, in: .userDomainMask).first?.standardizedFileURL.path
                 if let trashRoot, trashURL.path.hasPrefix(trashRoot + "/"),
-                   (try? digest(trashURL)) == record.expectedDigest {
+                   (try? digest(trashURL, checkCancellation: false)) == record.expectedDigest {
                     try? fm.removeItem(at: trashURL)
                 }
             }
@@ -172,14 +172,14 @@ struct FileTools {
         return backup
     }
     private func verify(_ url: URL, expected: String?) throws {
-        guard let expected, try digest(url) == expected else { throw AgentError.message("Конфликт отмены: файл изменён другой программой") }
+        guard let expected, try digest(url, checkCancellation: false) == expected else { throw AgentError.message("Конфликт отмены: файл изменён другой программой") }
     }
-    private func digest(_ url: URL) throws -> String {
+    func digest(_ url: URL, checkCancellation: Bool = true) throws -> String {
         var hash = SHA256()
         var count = 0
         var totalBytes = 0
         func visit(_ item: URL, relative: String) throws {
-            try Task.checkCancellation()
+            if checkCancellation { try Task.checkCancellation() }
             count += 1
             guard count <= 10_000 else { throw AgentError.message("Каталог содержит более 10000 объектов") }
             let values = try item.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
@@ -198,7 +198,7 @@ struct FileTools {
                 let handle = try FileHandle(forReadingFrom: item); defer { try? handle.close() }
                 var contentHash = SHA256()
                 while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
-                    try Task.checkCancellation()
+                    if checkCancellation { try Task.checkCancellation() }
                     totalBytes += chunk.count
                     guard totalBytes <= 536_870_912 else { throw AgentError.message("Общий размер операции превышает 512 МБ") }
                     contentHash.update(data: chunk)

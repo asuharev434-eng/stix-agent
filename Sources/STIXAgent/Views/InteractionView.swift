@@ -48,10 +48,11 @@ struct PermissionsCard: View {
         VStack(alignment: .leading, spacing: 15) {
             Label("Доступ к этому Mac", systemImage: "desktopcomputer").font(.system(size: 16, weight: .medium))
             Text("Выдайте доступ один раз, чтобы агент мог работать с вашими файлами. macOS покажет собственные запросы разрешений.").font(.system(size: 14)).foregroundStyle(.secondary).lineSpacing(3)
-            HStack {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), alignment: .leading)], alignment: .leading, spacing: 8) {
                 Button("Выбрать папку") { store.chooseFiles(folderOnly: true) }
                 Button("Полный доступ к диску") { store.openDiskAccess() }
                 Button("Универсальный доступ") { store.requestAccessibility() }
+                Button("Запись экрана") { store.openScreenAccess() }
             }.buttonStyle(.bordered)
             HStack {
                 Button("Открыть LM Studio / Bionic") { LocalServices.openModelApp() }

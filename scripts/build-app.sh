@@ -20,9 +20,9 @@ if [[ -f "$project_dir/.signing-identity" ]]; then
 fi
 signing_identity="${STIX_SIGN_IDENTITY:-$signing_default}"
 if [[ "$signing_identity" == "-" ]]; then
-    codesign --force --sign - --identifier studio.stix.agent "$app_dir"
+    codesign --force --sign - --entitlements "$project_dir/scripts/STIXAgent.entitlements" --identifier studio.stix.agent "$app_dir"
 else
-    codesign --force --sign "$signing_identity" --options runtime --timestamp=none --identifier studio.stix.agent "$app_dir"
+    codesign --force --sign "$signing_identity" --options runtime --timestamp=none --entitlements "$project_dir/scripts/STIXAgent.entitlements" --identifier studio.stix.agent "$app_dir"
 fi
 codesign --verify --deep --strict "$app_dir"
 if [[ "${1:-}" == "--install" ]]; then

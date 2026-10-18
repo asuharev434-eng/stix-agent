@@ -29,10 +29,15 @@ struct APIClient {
             request.httpBody = Data(body.utf8); request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         if connection.auth != "none" {
-            let key = try vault.get(connection.id)
+            let key: String
+            if connection.auth == "oauth" {
+                guard url.scheme == "https" else { throw AgentError.message("OAuth API требует HTTPS") }
+                let oauth = try OAuthConfiguration.load(directory: connection.documentationPath)
+                key = try await OAuthClient.shared.accessToken(configuration: oauth, credentialID: connection.id, vault: vault)
+            } else { key = try vault.get(connection.id) }
             guard !key.contains("\n"), !key.contains("\r") else { throw AgentError.message("Ключ содержит недопустимый перенос строки") }
             switch connection.auth {
-            case "bearer": request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            case "bearer", "oauth": request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
             case "basic":
                 if let colon = key.firstIndex(of: ":") { vault.remember(String(key[key.index(after: colon)...])) }
                 request.setValue("Basic \(Data(key.utf8).base64EncodedString())", forHTTPHeaderField: "Authorization")
