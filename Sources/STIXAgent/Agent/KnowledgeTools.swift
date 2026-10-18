@@ -83,7 +83,14 @@ extension AppStore {
     func setMemory(_ records: [String]) throws {
         let records = records.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         guard records.count <= 100, records.allSatisfy({ $0.count <= 1000 && vault.redact($0) == $0 }) else { throw AgentError.message("До 100 записей по 1000 символов, без ключей и паролей") }
-        preferences.memory = Array(NSOrderedSet(array: records)) as? [String] ?? records; save()
+        let original = memoryEntries.filter { $0.scope != .personal }
+        var personal: [MemoryEntry] = []
+        for (index,text) in Array(NSOrderedSet(array: records)).enumerated() {
+            guard let text = text as? String else { continue }
+            if let existing = memoryEntries.first(where: { $0.scope == .personal && $0.text == text }) { personal.append(existing) }
+            else { personal.append(.init(scope: .personal, category: .preferences, text: text, source: "Форма памяти", sourceChatID: selectedID, order: (memoryEntries.map(\.order).max() ?? -1) + index + 1)) }
+        }
+        try replacePersonalMemory(original + personal)
     }
     func executeKnowledge(_ name: String, args: JSONValue, chatID: UUID) async throws -> ToolOutcome? {
         switch name {
@@ -91,7 +98,7 @@ extension AppStore {
         case "search_chats":
             let query = try args.requiredString("query")
             guard query.count <= 500, vault.redact(query) == query else { throw AgentError.message("Недопустимый поисковый запрос") }
-            let hits = LocalChatSearch.search(query, in: chats)
+            let hits = try ChatSearchIndex(paths: storage.paths).search(query, in: chats)
             return .init(text: hits.isEmpty ? "Ничего не найдено" : vault.redact(hits.map { "\($0.title) · chat_id=\($0.chatID), message_id=\($0.messageID)\n\($0.snippet)" }.joined(separator: "\n\n")))
         case "run_diagnostics": return .init(text: await Diagnostics.run(preferences: preferences, selectedModel: chats.first(where: { $0.id == chatID })?.model ?? "", jobs: jobs))
         case "manage_skill":

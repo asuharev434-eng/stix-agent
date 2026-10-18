@@ -13,9 +13,13 @@ struct FileTools {
         let base = workingDirectory.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? URL(fileURLWithPath: fm.currentDirectoryPath)
         let url = try canonicalURL(expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded) : base.appendingPathComponent(expanded))
         let root = try canonicalURL(paths.root).path
-        let allowed = try [paths.documentation, paths.attachments, paths.skills].contains { subtree in
+        var subtrees = [paths.documentation, paths.attachments, paths.skills]
+        let relative = Array(url.pathComponents.dropFirst(URL(fileURLWithPath: root).pathComponents.count))
+        if relative.count >= 3, relative[0] == "Chats", let id = UUID(uuidString: relative[1]), relative[2] == "Attachments" { subtrees.append(paths.chatAttachments(id)) }
+        let allowed = try subtrees.contains { subtree in
             let allowedRoot = try canonicalURL(subtree).path
-            let expectedRoot = URL(fileURLWithPath: root).appendingPathComponent(subtree.lastPathComponent).path
+            let suffix = subtree.standardizedFileURL.pathComponents.dropFirst(paths.root.standardizedFileURL.pathComponents.count)
+            let expectedRoot = suffix.reduce(URL(fileURLWithPath: root)) { $0.appendingPathComponent($1) }.path
             return allowedRoot == expectedRoot && (url.path == allowedRoot || url.path.hasPrefix(allowedRoot + "/"))
         }
         guard allowed || (url.path != root && !url.path.hasPrefix(root + "/")) else { throw AgentError.message("Доступ к внутренним данным приложения запрещён") }

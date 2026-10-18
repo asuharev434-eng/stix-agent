@@ -1,49 +1,6 @@
 import SwiftUI
 import AppKit
 
-struct MemoryCard: View {
-    @EnvironmentObject var store: AppStore
-    @State private var newRecord = ""
-    @State private var editingIndex: Int?
-    @State private var editedRecord = ""
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label("Память", systemImage: "brain").font(.headline)
-            Text("Предпочтения, рабочие папки и договорённости. Сохраняются на этом Mac и используются в новых чатах.").font(.caption).foregroundStyle(.secondary)
-            if (store.preferences.memory ?? []).isEmpty { Text("Пока ничего не сохранено").foregroundStyle(.secondary) }
-            ForEach(Array((store.preferences.memory ?? []).enumerated()), id: \.offset) { index, text in
-                HStack(alignment: .top) {
-                    if editingIndex == index {
-                        TextField("Запись", text: $editedRecord, axis: .vertical).textFieldStyle(.roundedBorder)
-                        Button("Сохранить") { update(index, value: editedRecord); editingIndex = nil }
-                        Button("Отмена") { editingIndex = nil }
-                    } else {
-                        Text(text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                        Button { editingIndex = index; editedRecord = text } label: { Image(systemName: "pencil") }.help("Изменить запись")
-                        Button { update(index, value: nil) } label: { Image(systemName: "trash") }.help("Удалить запись из памяти")
-                    }
-                }.font(.callout).padding(10).agentCard(cornerRadius: 12)
-            }
-            HStack {
-                TextField("Что запомнить…", text: $newRecord, axis: .vertical).textFieldStyle(.roundedBorder)
-                Button("Запомнить") {
-                    do { try store.setMemory((store.preferences.memory ?? []) + [newRecord]); newRecord = "" }
-                    catch { store.error = error.localizedDescription }
-                }.disabled(newRecord.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            if !(store.preferences.memory ?? []).isEmpty {
-                Button("Удалить всю память", role: .destructive) { try? store.setMemory([]); editingIndex = nil }.buttonStyle(.borderless)
-            }
-        }.padding(18).agentCard()
-    }
-    private func update(_ index: Int, value: String?) {
-        var records = store.preferences.memory ?? []
-        guard records.indices.contains(index) else { return }
-        if let value { records[index] = value } else { records.remove(at: index) }
-        do { try store.setMemory(records) } catch { store.error = error.localizedDescription }
-    }
-}
-
 struct SkillsCard: View {
     @EnvironmentObject var store: AppStore
     @State private var editedName: String?
@@ -111,7 +68,7 @@ struct ChatSearchCard: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Поиск по чатам", systemImage: "magnifyingglass").font(.headline)
             TextField("Текст сообщения или договорённости", text: $query).textFieldStyle(.roundedBorder)
-            let hits = LocalChatSearch.search(query, in: store.chats)
+            let hits = (try? ChatSearchIndex(paths: store.storage.paths).search(query, in: store.chats)) ?? LocalChatSearch.search(query, in: store.chats)
             if !query.isEmpty && hits.isEmpty { Text("Ничего не найдено").foregroundStyle(.secondary) }
             ForEach(hits) { hit in
                 Button {

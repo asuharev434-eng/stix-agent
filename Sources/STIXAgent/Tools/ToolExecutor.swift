@@ -15,6 +15,7 @@ extension AppStore {
     }
     func execute(_ call: ToolCall, chatID: UUID) async throws -> ToolOutcome {
         try Task.checkCancellation()
+        guard canPersist else { throw AgentError.message("Хранилище недоступно; действия остановлены до восстановления записи") }
         guard let i = index(chatID) else { throw CancellationError() }
         let args = try JSONValue.parse(call.arguments)
         guard let object = args.object else { throw AgentError.message("Аргументы инструмента должны быть объектом") }
@@ -118,7 +119,7 @@ extension AppStore {
             return .init(text: try await APIClient(vault: vault).request(connection: connection, path: path, method: method, body: args["body"].string))
         case "add_plugin": return try await addPlugin(args, chatID: chatID)
         case "manage_plugin": return try await managePlugin(args, chatID: chatID)
-        case "present_artifact": return try presentArtifact(args)
+        case "present_artifact": return try presentArtifact(args, chatID: chatID)
         case "import_image_workflow":
             let name = try args.requiredString("name"), raw = try args.requiredString("workflow_json")
             guard raw.utf8.count <= 2_000_000 else { throw AgentError.message("Workflow превышает 2 МБ") }
@@ -235,12 +236,12 @@ extension AppStore {
         } else { throw AgentError.message("Действие: enable, disable, remove") }
         save(); return .init(text: "Плагин: \(action)")
     }
-    func presentArtifact(_ args: JSONValue) throws -> ToolOutcome {
+    func presentArtifact(_ args: JSONValue, chatID: UUID? = nil) throws -> ToolOutcome {
         let kind = try args.requiredString("kind"), title = try args.requiredString("title"), content = vault.redact(try args.requiredString("content"))
         let extensions = ["html": "html", "mermaid": "mmd", "svg": "svg", "markdown": "md"]
         guard let ext = extensions[kind], content.utf8.count <= 2_000_000 else { throw AgentError.message("Недопустимый тип или размер артефакта") }
         let safe = title.replacingOccurrences(of: #"[^\p{L}\p{N} _-]"#, with: "", options: .regularExpression).prefix(70)
-        let directory = storage.paths.attachments.appendingPathComponent(UUID().uuidString)
+        let directory = (chatID.map { storage.paths.chatAttachments($0) } ?? storage.paths.attachments).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let url = directory.appendingPathComponent("\(safe.isEmpty ? "Artifact" : String(safe)).\(ext)")
         try Data(content.utf8).write(to: url, options: .atomic)

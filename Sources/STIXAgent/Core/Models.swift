@@ -103,6 +103,7 @@ struct Chat: Codable, Identifiable {
     var savedDraft: String? = nil
     var draftAttachments: [Attachment]? = nil
     var contextCheckpoint: ContextCheckpoint? = nil
+    var projectID: UUID? = nil
 }
 struct APIConnection: Codable, Identifiable, Equatable {
     var id: String
@@ -150,7 +151,15 @@ struct AppPreferences: Codable {
     var disabledSkills: Set<String>? = nil
     var voiceLanguage: String? = nil
 }
-struct PersistedState: Codable { var version = 1; var chats: [Chat]; var preferences: AppPreferences; var undos: [UndoRecord] = []; var jobs: [AgentJob]? = nil }
+struct PersistedState: Codable {
+    var version = 1
+    var chats: [Chat]
+    var preferences: AppPreferences
+    var undos: [UndoRecord] = []
+    var jobs: [AgentJob]? = nil
+    var memoryEntries: [MemoryEntry]? = nil
+    var projects: [MemoryProject]? = nil
+}
 
 struct PendingInteraction: Identifiable {
     enum Kind { case question, approval, secret, permissions }

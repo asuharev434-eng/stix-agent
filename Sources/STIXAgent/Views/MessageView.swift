@@ -14,7 +14,7 @@ struct MessageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if message.role == "model_settings" { ModelSettingsCard(chatID: chatID) }
-            else if message.role == "memory" { MemoryCard() }
+            else if message.role == "memory" { MemoryCard(chatID: chatID) }
             else if message.role == "skills" { SkillsCard() }
             else if message.role == "chat_search" { ChatSearchCard(initialQuery: message.text) }
             else if message.role == "permissions" { PermissionsCard() }

@@ -20,7 +20,7 @@ enum ExtendedToolCatalog {
         .init(name: "read_document", description: "Extract local PDF/DOCX/text/image OCR. Images can additionally be analyzed via delegate_model vision with image_paths_json.", parameters: ToolCatalog.schema(["path": "string"], required: ["path"])),
         .init(name: "preview_changes", description: "Preview file diff or batch operations without changing source. operations_json array: {kind:write,path,content}, {kind:move,source,destination}, {kind:trash,path}. Returns plan_id and visual artifact. Use before modifying existing code or sorting many files.", parameters: ToolCatalog.schema(["operations_json": "string"], required: ["operations_json"])),
         .init(name: "apply_changes", description: "Apply a reviewed file plan after host approval. Revalidates unchanged sources/destinations. Changes have undo receipts.", parameters: ToolCatalog.schema(["plan_id": "string"], required: ["plan_id"])),
-        .init(name: "manage_memory", description: "list/remember/forget stable user preferences shared across chats. Remember only when user requests it; forget by exact text, or all when explicitly requested. Never store secrets.", parameters: ToolCatalog.schema(["action": "string", "text": "string"], required: ["action"])),
+        .init(name: "manage_memory", description: "list/read/remember/update/forget scoped memory. scope personal/project/chat (default personal), category profile/preferences for personal, overview/decisions/tasks for project, notes for chat. Never access another project/chat. Remember only when user requests it; forget by exact text, or all when explicitly requested. Never store secrets.", parameters: ToolCatalog.schema(["action": "string", "text": "string", "scope": "string", "category": "string", "id": "string", "always_include": "boolean", "query": "string"], required: ["action"])),
         .init(name: "configure_plugin_environment", description: "Map an environment variable to an existing credential_id from protected input for a stdio MCP plugin. No secret values in args. User approval required, plugin restarted. Empty credential_id removes mapping.", parameters: ToolCatalog.schema(["plugin_id": "string", "variable": "string", "credential_id": "string"], required: ["plugin_id", "variable", "credential_id"])),
         .init(name: "generate_image", description: "Generate or edit local ComfyUI image. Always include prompt describing the desired result. For conversational edit of just-generated image set input_image='last' (same chat). Keep original. mask is an optional absolute PNG file path, never a color word; white pixels edit/black preserve. Optional resize_only true resizes without diffusion and permits an empty prompt string. width/height 256..2048 multiples8, steps1..100, count1..4; denoise0..1. For variants input_image last + count. Image prompt direct to Comfy.", parameters: imageParameters)
     ]
@@ -99,16 +99,7 @@ extension AppStore {
             } catch let error as FileChangePlanner.ApplyFailure {
                 error.undoRecords.forEach(registerUndo); throw error
             }
-        case "manage_memory":
-            let action = try args.requiredString("action"), text = vault.redact(args["text"].string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            var memory = preferences.memory ?? []
-            switch action {
-            case "list": return .init(text: memory.isEmpty ? "Память пуста" : memory.joined(separator: "\n"))
-            case "remember": guard !text.isEmpty, text.count <= 1000, memory.count < 100 else { throw AgentError.message("Память: до 100 записей по 1000 символов") }; if !memory.contains(text) { memory.append(text) }
-            case "forget": if text == "all" { memory = [] } else { memory.removeAll { $0 == text } }
-            default: throw AgentError.message("Память: list/remember/forget")
-            }
-            preferences.memory = memory; save(); return .init(text: "Память обновлена")
+        case "manage_memory": return try executeMemory(args, chatID: chatID)
         case "list_model_capabilities": return .init(text: ModelOrchestrator.catalog(installed: models, assignments: ModelOrchestrator.effectiveAssignments(installed: models, configured: preferences.modelRoles ?? [:])))
         case "show_model_settings":
             showModelSettings(chatID: chatID); return .init(text: "Форма выбора моделей показана в чате. Настройки меняет пользователь в форме.")

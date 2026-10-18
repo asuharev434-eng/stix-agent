@@ -9,6 +9,8 @@ final class AppStore: ObservableObject {
     @Published var chats: [Chat] = []
     @Published var selectedID: UUID?
     @Published var preferences = AppPreferences()
+    @Published var memoryEntries: [MemoryEntry] = []
+    @Published var projects: [MemoryProject] = []
     @Published var models: [ModelDescriptor] = []
     @Published var skills: [LocalSkill] = []
     @Published var focusedMessageID: UUID?
@@ -46,7 +48,7 @@ final class AppStore: ObservableObject {
             if let state = try storage.load() {
                 jobs = state.jobs ?? []
                 for i in jobs.indices where ["running", "queued"].contains(jobs[i].status) { jobs[i].status = "interrupted" }
-                chats = state.chats; preferences = state.preferences; undos = Dictionary(uniqueKeysWithValues: state.undos.map { ($0.id, $0) })
+                chats = state.chats; preferences = state.preferences; memoryEntries = state.memoryEntries ?? []; projects = state.projects ?? []; undos = Dictionary(uniqueKeysWithValues: state.undos.map { ($0.id, $0) })
                 for i in chats.indices {
                     let legacyInterrupted = chats[i].messages.contains(where: { $0.status == "running" })
                     if legacyInterrupted, !jobs.contains(where: { $0.chatID == chats[i].id && ["interrupted", "paused", "running", "queued"].contains($0.status) }), let input = chats[i].messages.last(where: { $0.role == "user" }) {
@@ -72,6 +74,7 @@ final class AppStore: ObservableObject {
         draft = currentChat?.savedDraft ?? ""; attachments = currentChat?.draftAttachments ?? []
         do { try SkillLibrary(paths: storage.paths).seed(); reloadSkills() }
         catch { self.error = "Скиллы: \(error.localizedDescription)" }
+        if canPersist { try? ChatSearchIndex(paths: storage.paths).synchronize(in: chats) }
         for connection in preferences.connections { if let value = try? vault.get(connection.id), connection.auth == "basic", let colon = value.firstIndex(of: ":") { vault.remember(String(value[value.index(after: colon)...])) } }
         for secret in preferences.secrets { _ = try? vault.get(secret.id) }
     }
@@ -82,8 +85,8 @@ final class AppStore: ObservableObject {
     func save() {
         guard canPersist else { return }
         if let id = selectedID, let i = index(id) { chats[i].savedDraft = vault.redact(draft); chats[i].draftAttachments = attachments }
-        do { try storage.save(.init(chats: chats, preferences: preferences, undos: Array(undos.values), jobs: jobs)) }
-        catch { self.error = "История не сохранена: \(error.localizedDescription)" }
+        do { try synchronizeProjects(); try storage.save(persistedState()) }
+        catch { self.error = "История не сохранена: \(error.localizedDescription). Запись остановлена; перезапустите приложение для восстановления журнала."; canPersist = false; task?.cancel() }
     }
     func newChat(folder: URL? = nil) {
         preserveDraft()
@@ -100,6 +103,7 @@ final class AppStore: ObservableObject {
         guard id != activeChatID else { error = "Сначала остановите текущую задачу"; return }
         for i in jobs.indices where jobs[i].chatID == id { jobs[i].status = "cancelled" }
         chats.removeAll { $0.id == id }
+        memoryEntries.removeAll { $0.scope == .chat && $0.ownerID == id }
         if selectedID == id { selectedID = chats.first?.id; draft = currentChat?.savedDraft ?? ""; attachments = currentChat?.draftAttachments ?? [] }
         if chats.isEmpty { newChat() }; save()
     }
