@@ -99,6 +99,8 @@ struct Chat: Codable, Identifiable {
     var pinned: Bool? = nil
     var questionLevel: Int? = nil
     var tasksCollapsed: Bool? = nil
+    var savedDraft: String? = nil
+    var draftAttachments: [Attachment]? = nil
 }
 struct APIConnection: Codable, Identifiable, Equatable {
     var id: String
@@ -143,6 +145,8 @@ struct AppPreferences: Codable {
     var memory: [String]? = nil
     var modelRoles: [String: String]? = nil
     var pluginEnvironment: [String: [String: String]]? = nil
+    var disabledSkills: Set<String>? = nil
+    var voiceLanguage: String? = nil
 }
 struct PersistedState: Codable { var version = 1; var chats: [Chat]; var preferences: AppPreferences; var undos: [UndoRecord] = []; var jobs: [AgentJob]? = nil }
 

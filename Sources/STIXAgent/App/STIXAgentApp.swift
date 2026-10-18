@@ -14,16 +14,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct STIXAgentApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @StateObject private var store = AppStore()
+    @StateObject private var store: AppStore
     init() {
         if CommandLine.arguments.contains("--capabilities-json") {
             print(JSONValue.object(NativeCapabilities.status()).encoded)
             exit(0)
         }
+        // A separately identified QA bundle can exercise UI with synthetic data,
+        // without replacing the user's app or touching its chats and credentials.
+        let validationRoot = Bundle.main.object(forInfoDictionaryKey: "STIXValidationRoot") as? String
+        _store = StateObject(wrappedValue: AppStore(storage: StateStorage(paths: AppStoragePaths(root: validationRoot.map { URL(fileURLWithPath: $0, isDirectory: true) }))))
     }
     var body: some Scene {
         WindowGroup {
             ChatView().environmentObject(store).preferredColorScheme(store.colorScheme)
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.save() }
                 .frame(minWidth: 760, minHeight: 570)
                 .task {
                     if !store.preferences.onboardingComplete { store.showPermissions() }

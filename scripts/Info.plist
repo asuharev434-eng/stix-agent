@@ -6,12 +6,14 @@
 <key>CFBundleIdentifier</key><string>studio.stix.agent</string>
 <key>CFBundleExecutable</key><string>STIXAgent</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.3.3</string>
-<key>CFBundleVersion</key><string>6</string>
+<key>CFBundleShortVersionString</key><string>0.4.0</string>
+<key>CFBundleVersion</key><string>7</string>
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>studio.stix.agent.oauth</string><key>CFBundleURLSchemes</key><array><string>stixagent</string></array></dict></array>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>Для локальной диктовки текста в редактируемый черновик чата. Аудио не отправляется в облако.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Для распознавания речи только на этом Mac. Результат можно проверить перед отправкой.</string>
 <key>NSAppleEventsUsageDescription</key><string>STIX Agent управляет приложениями по вашим поручениям в чате.</string>
 <key>NSDocumentsFolderUsageDescription</key><string>Для работы с файлами и папками по вашим поручениям.</string>
 <key>NSDownloadsFolderUsageDescription</key><string>Для сортировки и обработки загруженных файлов.</string>

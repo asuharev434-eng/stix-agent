@@ -11,10 +11,14 @@ struct SlashCommandItem: Identifiable, Equatable {
 }
 
 enum SlashCommands {
-    static func items(plugins: [PluginConfig], canSteer: Bool) -> [SlashCommandItem] {
+    static func items(plugins: [PluginConfig], canSteer: Bool, skills: [LocalSkill] = []) -> [SlashCommandItem] {
         var items: [SlashCommandItem] = [
             .init(id: "image", command: "/image", title: "Создать или изменить картинку", detail: "Описание → локальный ComfyUI", icon: "photo", takesText: true),
             .init(id: "models", command: "/models", title: "Модели для задач", detail: "Назначить локальных специалистов", icon: "square.stack.3d.up"),
+            .init(id: "skills", command: "/skills", title: "Скиллы", detail: "Локальные инструкции и создание скиллов", icon: "sparkles"),
+            .init(id: "memory", command: "/memory", title: "Память", detail: "Просмотреть, изменить или удалить записи", icon: "brain"),
+            .init(id: "search", command: "/search", title: "Поиск по чатам", detail: "Найти сообщения в локальной истории", icon: "magnifyingglass", takesText: true),
+            .init(id: "diagnostics", command: "/diagnostics", title: "Диагностика", detail: "Модели, память Mac, ComfyUI и очередь", icon: "stethoscope"),
             .init(id: "tasks", command: "/tasks", title: "Показать задачи", detail: "Развернуть панель и вернуть закрытые карточки", icon: "list.bullet.rectangle"),
             .init(id: "plugins", command: "/plugins", title: "Плагины", detail: "Подключённые MCP-плагины", icon: "puzzlepiece.extension"),
             .init(id: "connections", command: "/connections", title: "Подключения API", detail: "Сервисы и документация", icon: "network"),
@@ -30,6 +34,7 @@ enum SlashCommands {
             return .init(id: "plugin:" + plugin.id, command: "/plugin/" + encoded, title: plugin.name,
                          detail: plugin.enabled ? "Плагин · опишите задачу" : "Плагин отключён", icon: "puzzlepiece.extension", takesText: true, enabled: plugin.enabled)
         }
+        items += skills.map { .init(id: "skill:" + $0.name, command: "/skill/" + $0.name, title: $0.name, detail: $0.description, icon: "sparkles", takesText: true, enabled: $0.enabled) }
         return items
     }
     static func matches(draft: String, items: [SlashCommandItem]) -> [SlashCommandItem] {

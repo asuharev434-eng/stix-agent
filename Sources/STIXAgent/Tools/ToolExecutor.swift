@@ -4,7 +4,7 @@ struct ToolOutcome { var text: String; var attachments: [Attachment] = []; var u
 
 extension AppStore {
     func allTools() -> [ToolDefinition] {
-        var list = ToolCatalog.builtins + ExtendedToolCatalog.definitions + ModelOrchestrator.definitions + ComputerTools.definitions + TaskControlTools.definitions
+        var list = ToolCatalog.builtins + ExtendedToolCatalog.definitions + ModelOrchestrator.definitions + ComputerTools.definitions + TaskControlTools.definitions + KnowledgeTools.definitions
         if preferences.webSearchEnabled != false { list += WebSearchClient.definitions }
         for (id, tools) in pluginTools {
             for tool in tools {
@@ -43,6 +43,7 @@ extension AppStore {
         } else { throw AgentError.message("Неизвестный инструмент \(call.name)") }
         let folder = chats[i].folder ?? FileManager.default.homeDirectoryForCurrentUser.path
         let files = FileTools(paths: storage.paths)
+        if let result = try await executeKnowledge(call.name, args: args, chatID: chatID) { return result }
         switch call.name {
         case "list_files": return .init(text: try await fileWork { try files.list(path: args.requiredString("path"), workingDirectory: folder) })
         case "read_file": return .init(text: try await fileWork { try files.read(path: args.requiredString("path"), workingDirectory: folder, offset: args["offset"].int ?? 0, limit: args["limit"].int ?? 30000) })
@@ -162,6 +163,8 @@ extension AppStore {
             preferences.defaultModel = value; if let i = index(chatID) { chats[i].model = value }
         case "web_search_enabled":
             guard ["true", "false"].contains(value) else { throw AgentError.message("web_search_enabled: true/false") }; preferences.webSearchEnabled = value == "true"
+        case "voice_language":
+            guard value.range(of: #"^[a-z]{2,3}[-_][A-Z]{2}$"#, options: .regularExpression) != nil else { throw AgentError.message("Язык диктовки: ru-RU, en-US и другие коды языка-региона") }; preferences.voiceLanguage = value
         case "image_prompt_language":
             guard ["auto", "en", "ru", "zh", "ja"].contains(value) else { throw AgentError.message("Язык промпта: auto/en/ru/zh/ja") }; if let i = index(chatID) { chats[i].imagePromptLanguage = value }
         case "font_size":
@@ -250,7 +253,7 @@ extension AppStore {
         Task {
             defer { undoing.remove(id) }
             do {
-                let result = try await fileWork { try FileTools(paths: paths).undo(record) }
+                let result = try await fileWork { try FileChangePlanner(paths: paths).undo(record) }
                 undos.removeValue(forKey: id)
                 editMessage(messageID, chatID: chatID) { $0.undoID = nil; $0.status = "undone" }
                 addMessage(.init(role: "assistant", text: result), to: chatID)

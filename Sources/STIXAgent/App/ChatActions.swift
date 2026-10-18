@@ -82,7 +82,7 @@ extension AppStore {
         let text = (replacement ?? message.text).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !message.attachments.isEmpty else { return }
         guard vault.redact(text) == text else { error = "В сообщении обнаружен ключ. Используйте защищённую форму подключения API."; return }
-        chats.insert(branch, at: 0); selectedID = branch.id
+        preserveDraft(); chats.insert(branch, at: 0); selectedID = branch.id
         draft = text; attachments = message.attachments; save(); send()
     }
 }

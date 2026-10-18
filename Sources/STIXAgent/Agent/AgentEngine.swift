@@ -2,6 +2,7 @@ import Foundation
 
 extension AppStore {
     func send() {
+        reloadSkills()
         guard canPersist else { error = "Выполнение остановлено: сначала восстановите читаемую историю state.json из state.previous.json. Исходные данные сохранены."; return }
         if pendingHere, pending?.kind == .question {
             let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -19,7 +20,7 @@ extension AppStore {
             if let prefix = prefixes.first(where: { raw.lowercased().hasPrefix($0.lowercased()) }), steerCurrentTask(String(raw.dropFirst(prefix.count))) { draft = ""; return }
         }
         let executionPrompt: String
-        do { executionPrompt = try SlashCommands.pluginPrompt(text, plugins: preferences.plugins) ?? text }
+        do { executionPrompt = try skillPrompt(text) ?? SlashCommands.pluginPrompt(text, plugins: preferences.plugins) ?? text }
         catch { self.error = error.localizedDescription; return }
         let incoming = attachments
         draft = ""; attachments = []
@@ -30,6 +31,7 @@ extension AppStore {
         enqueue(prompt: executionPrompt, attachments: incoming, chatID: id, sourceMessageID: userMessage.id)
     }
     func handleLocalCommand(_ text: String, chatID: UUID) -> Bool {
+        if handleKnowledgeCommand(text, chatID: chatID) { return true }
         let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let theme: String?
         if lower == "/theme dark" || ["включи темную тему", "включи тёмную тему", "включи темную тему в этом приложении", "включи тёмную тему в этом приложении"].contains(lower) { theme = "dark" }
@@ -54,7 +56,7 @@ extension AppStore {
             let text = preferences.connections.isEmpty ? "Подключений пока нет. Напишите: «Подключи API» с названием и адресом. Для ключа появится защищённая форма." : preferences.connections.map { "**\($0.name)** · \($0.baseURL)\nДокументация: `\($0.documentationPath)`" }.joined(separator: "\n\n")
             addMessage(.init(role: "assistant", text: text), to: chatID); return true
         case "/help":
-            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/image описание` — генерация через ComfyUI\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/tasks` — показать задачи\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
+            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/image описание` — генерация через ComfyUI\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
         default: return false
         }
     }
@@ -63,6 +65,7 @@ extension AppStore {
         let connections = preferences.connections.map { "\($0.name): id=\($0.id), base=\($0.baseURL), docs=\($0.documentationPath)" }.joined(separator: "\n")
         let pluginList = preferences.plugins.map { "\($0.name) id=\($0.id) enabled=\($0.enabled)" }.joined(separator: "\n")
         return """
+        \(knowledgeSystemPrompt(chatID: chatID))
         \(QuestionPolicy.prompt(chats.first(where: { $0.id == chatID })?.questionLevel ?? preferences.questionLevel))
         Ты STIX Agent — локальный помощник на macOS. Отвечай по-русски, кратко и ясно. Выполняй небольшие задачи с файлами, папками, кодом и терминалом. Рабочая папка: \(folder).
         Используй инструменты, проверяй результаты. Не выдавай предположения за выполненные действия. Не проси подтверждений обычных действий: исполнитель сам запросит необходимое разрешение. Уточняй только существенную неоднозначность через ask_user. Не запускай фоновые команды с &/nohup. Команды отменяются вместе с задачей.
@@ -96,28 +99,32 @@ extension AppStore {
         let input = vault.redact([text, attachmentText, visionNote].filter { !$0.isEmpty }.joined(separator: "\n\n"))
         guard let current = index(chatID) else { throw CancellationError() }
         if let id = activeJobID, let jobIndex = jobs.firstIndex(where: { $0.id == id }) { jobs[jobIndex].inputRecorded = true }
-        chats[current].history.append(.init(role: "user", content: input, imageURLs: hasImages && mainSeesImages ? prepared.imageURLs : nil, sourceMessageID: sourceMessageID)); save()
+        let durableSource = sourceMessageID ?? jobs.first(where: { $0.id == activeJobID }).map { $0.sourceMessageID ?? $0.id }
+        chats[current].history.append(.init(role: "user", content: input, imageURLs: hasImages && mainSeesImages ? prepared.imageURLs : nil, sourceMessageID: durableSource)); save()
         let endpoint = preferences.lmEndpoint
-        // Repeated editing of "last" silently edits a different file each time.
-        // Reuse this task's successful result when a small model repeats the same
-        // image instruction, then request a text-only conclusion. New user steering
-        // clears this ledger so an intentional follow-up can run normally.
-        var imageResults: [String: (ToolOutcome, String)] = [:]
-        var concludeRepeatedImage = false
+        let job = jobs.first { $0.id == activeJobID }
+        let start = job.map { $0.sourceMessageID ?? $0.id }.flatMap { source in chats[current].history.firstIndex { $0.sourceMessageID == source } }
+            ?? chats[current].history.firstIndex { $0.role == "user" && $0.content == job?.prompt }
+            ?? (chats[current].history.count - 1)
+        var ledger = ToolExecutionLedger(history: Array(chats[current].history.dropFirst(start)))
+        var concludeRepeatedTool = false
         for round in 0..<preferences.maxToolRounds {
             try Task.checkCancellation()
             guard let j = index(chatID) else { throw CancellationError() }
-            if applyPendingCorrections(chatID: chatID) { imageResults = [:]; concludeRepeatedImage = false }
+            if applyPendingCorrections(chatID: chatID) { concludeRepeatedTool = false }
             updateTaskPhase(round == 0 ? "Думаю…" : "Продолжаю…")
             reasoningText = ""; transientReasoning = ""
             let message = ChatMessage(role: "assistant", text: "", status: "running")
             addMessage(message, to: chatID)
-            let history = boundedHistory(chats[j].history)
             let reply: LMReply
             let store = self
             do {
-                let conclusion = concludeRepeatedImage ? "\nПовторная генерация не запускалась: изображение по этому описанию уже успешно сохранено. Дай краткий итог без инструментов, укажи фактический результат и честно назови оставшиеся невыполненные части, если они есть." : ""
-                reply = try await LMStudioClient(endpoint: endpoint).complete(model: model, messages: [.init(role: "system", content: systemPrompt(chatID: chatID) + conclusion)] + history, tools: concludeRepeatedImage ? [] : allTools(), thinking: preferences.thinking ?? false, onReasoning: { token in
+                let conclusion = concludeRepeatedTool ? "\nПовторный вызов инструмента остановлен. Используй сохранённые результаты; если результат неизвестен после прерывания, честно укажи необходимость проверки состояния. Дай краткий итог без инструментов, укажи фактический результат и честно назови оставшиеся невыполненные части, если они есть." : ""
+                let prompt = systemPrompt(chatID: chatID) + conclusion
+                let tools = concludeRepeatedTool ? [] : allTools()
+                let budget = try ContextBudget.historyCharacters(contextLimit: models.first { $0.id == model }?.contextLimit, system: prompt, tools: tools)
+                let history = ContextSummary.bounded(chats[j].history, maxCharacters: budget)
+                reply = try await LMStudioClient(endpoint: endpoint).complete(model: model, messages: [.init(role: "system", content: prompt)] + history, tools: tools, thinking: preferences.thinking ?? false, onReasoning: { token in
                     await store.receiveReasoning(token)
                 }) { token in
                     await store.receiveToken(token, messageID: message.id, chatID: chatID)
@@ -147,16 +154,16 @@ extension AppStore {
                 let card = ChatMessage(role: "tool", text: displayToolName(call.name), toolName: call.name, detail: call.arguments, status: "running")
                 addMessage(card, to: chatID)
                 do {
-                    let args = try JSONValue.parse(call.arguments)
-                    let imageKey = call.name == "generate_image" ? ImageActionIdentity.key(args) : nil
+                    _ = try JSONValue.parse(call.arguments)
                     let result: ToolOutcome
-                    if let imageKey, let (previous, path) = imageResults[imageKey] {
-                        guard FileManager.default.fileExists(atPath: path) else { throw AgentError.message("Ранее созданный файл больше недоступен. Проверь состояние; генерация не повторена.") }
-                        result = .init(text: "Это изображение уже создано в текущей задаче. Повторная генерация не выполнялась.\n" + previous.text)
-                        concludeRepeatedImage = true
+                    if let previous = ledger.repeated(call) {
+                        result = .init(text: (previous.uncertain ? "Результат предыдущего действия неизвестен. Повтор заблокирован; сначала проверь состояние.\n" : "Повторное действие не выполнялось. Сохранённый результат:\n") + previous.output)
+                        concludeRepeatedTool = true
+                    } else if concludeRepeatedTool {
+                        result = .init(text: "Не выполнено: обнаружен цикл инструментов. Сначала подведи итог выполненного.")
                     } else {
                         result = try await execute(call, chatID: chatID)
-                        if let imageKey, let path = lastImagePath(chatID: chatID) { imageResults[imageKey] = (result, path) }
+                        ledger.record(call, output: vault.redact(result.text))
                     }
                     let output = vault.redact(result.text)
                     editMessage(card.id, chatID: chatID) { $0.text = output; $0.status = "done"; $0.attachments = result.attachments; $0.undoID = result.undo?.id }
@@ -164,6 +171,7 @@ extension AppStore {
                     completedTaskStep()
                 } catch {
                     let output = vault.redact(error.localizedDescription)
+                    ledger.record(call, output: output, uncertain: true)
                     editMessage(card.id, chatID: chatID) { $0.text = output; $0.status = "error" }
                     if let j = index(chatID) { chats[j].history.append(.init(role: "tool", content: "Ошибка: \(output)", toolCallID: call.id)) }
                     if Task.isCancelled { throw CancellationError() }
@@ -241,6 +249,6 @@ extension AppStore {
     }
     func repairChatHistory(_ id: UUID) { if let i = index(id) { repairHistory(&chats[i].history) } }
     func displayToolName(_ tool: String) -> String {
-        ["list_files": "Просмотр папки", "read_file": "Чтение файла", "search_files": "Поиск файлов", "write_file": "Сохранение файла", "move_file": "Перемещение", "trash_file": "В Корзину", "run_shell": "Терминал", "ask_user": "Вопрос", "web_search": "Поиск DuckDuckGo", "read_web_page": "Чтение страницы", "list_tasks": "Очередь задач", "manage_task": "Управление задачей", "queue_task": "Добавление в очередь", "open_application": "Открытие приложения", "set_preference": "Настройки приложения", "preview_changes": "Предпросмотр изменений", "apply_changes": "Применение плана", "read_document": "Чтение документа", "delegate_model": "Модель-специалист", "list_model_capabilities": "Возможности моделей", "show_model_settings": "Выбор моделей для задач", "generate_image": "Редактирование / генерация", "manage_memory": "Память", "computer_snapshot": "Просмотр окна", "computer_action": "Действие в приложении", "browser_action": "Браузер", "connect_api": "Подключение API", "http_request": "Запрос к API", "request_secret": "Защищённый ввод", "add_plugin": "Подключение плагина", "present_artifact": "Артефакт", "show_file": "Файл"][tool] ?? tool
+        ["manage_skill": "Локальные скиллы", "show_memory": "Память", "search_chats": "Поиск по чатам", "run_diagnostics": "Диагностика", "list_files": "Просмотр папки", "read_file": "Чтение файла", "search_files": "Поиск файлов", "write_file": "Сохранение файла", "move_file": "Перемещение", "trash_file": "В Корзину", "run_shell": "Терминал", "ask_user": "Вопрос", "web_search": "Поиск DuckDuckGo", "read_web_page": "Чтение страницы", "list_tasks": "Очередь задач", "manage_task": "Управление задачей", "queue_task": "Добавление в очередь", "open_application": "Открытие приложения", "set_preference": "Настройки приложения", "preview_changes": "Предпросмотр изменений", "apply_changes": "Применение плана", "read_document": "Чтение документа", "delegate_model": "Модель-специалист", "list_model_capabilities": "Возможности моделей", "show_model_settings": "Выбор моделей для задач", "generate_image": "Редактирование / генерация", "manage_memory": "Память", "computer_snapshot": "Просмотр окна", "computer_action": "Действие в приложении", "browser_action": "Браузер", "connect_api": "Подключение API", "http_request": "Запрос к API", "request_secret": "Защищённый ввод", "add_plugin": "Подключение плагина", "present_artifact": "Артефакт", "show_file": "Файл"][tool] ?? tool
     }
 }

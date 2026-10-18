@@ -13,7 +13,7 @@ struct FileTools {
         let base = workingDirectory.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? URL(fileURLWithPath: fm.currentDirectoryPath)
         let url = try canonicalURL(expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded) : base.appendingPathComponent(expanded))
         let root = try canonicalURL(paths.root).path
-        let allowed = try [paths.documentation, paths.attachments].contains { subtree in
+        let allowed = try [paths.documentation, paths.attachments, paths.skills].contains { subtree in
             let allowedRoot = try canonicalURL(subtree).path
             let expectedRoot = URL(fileURLWithPath: root).appendingPathComponent(subtree.lastPathComponent).path
             return allowedRoot == expectedRoot && (url.path == allowedRoot || url.path.hasPrefix(allowedRoot + "/"))
@@ -154,6 +154,42 @@ struct FileTools {
         default: throw AgentError.message("Неизвестная операция отмены")
         }
         return "Операция отменена: \(source.path)"
+    }
+    /// Read-only, bounded preview of the exact change represented by an undo receipt.
+    /// Reject a changed target rather than presenting unrelated edits as our work.
+    func diffSnapshot(_ record: UndoRecord) throws -> FileDiffSnapshot {
+        let source = try resolve(record.source, workingDirectory: nil)
+        guard source.path == URL(fileURLWithPath: record.source).path else {
+            throw AgentError.message("Путь файла заменён символической ссылкой")
+        }
+        func text(_ url: URL) throws -> String {
+            guard let value = String(data: try smallData(url), encoding: .utf8) else {
+                throw AgentError.message("Предпросмотр поддерживает текст UTF-8 до 1 МБ")
+            }
+            return value
+        }
+        switch record.kind {
+        case "write":
+            try verify(source, expected: record.expectedDigest)
+            let before = try record.backup.map { try text(checkedBackup($0)) }
+            let after = try text(source)
+            try verify(source, expected: record.expectedDigest)
+            return FileDiffSnapshot(path: record.source, destination: nil, kind: record.kind, before: before, after: after)
+        case "move":
+            guard let destination = record.destination else { throw AgentError.message("Назначение перемещения отсутствует") }
+            let target = try resolve(destination, workingDirectory: nil)
+            guard target.path == URL(fileURLWithPath: destination).path else { throw AgentError.message("Путь файла заменён символической ссылкой") }
+            try verify(target, expected: record.expectedDigest)
+            let content = try text(target)
+            try verify(target, expected: record.expectedDigest)
+            return FileDiffSnapshot(path: record.source, destination: destination, kind: record.kind, before: content, after: content)
+        case "trash":
+            guard let backup = record.backup else { throw AgentError.message("Резервная копия недоступна") }
+            let saved = try checkedBackup(backup)
+            try verify(saved, expected: record.expectedDigest)
+            return FileDiffSnapshot(path: record.source, destination: nil, kind: record.kind, before: try text(saved), after: nil)
+        default: throw AgentError.message("Для этого действия предпросмотр недоступен")
+        }
     }
     private func requireMutableTree(_ url: URL) throws {
         let internalRoot = try canonicalURL(paths.root).path

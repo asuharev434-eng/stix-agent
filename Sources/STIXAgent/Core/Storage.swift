@@ -11,8 +11,9 @@ struct AppStoragePaths {
     var backups: URL { root.appendingPathComponent("Backups", isDirectory: true) }
     var documentation: URL { root.appendingPathComponent("Documentation", isDirectory: true) }
     var workflows: URL { root.appendingPathComponent("Workflows", isDirectory: true) }
+    var skills: URL { root.appendingPathComponent("Skills", isDirectory: true) }
     func prepare() throws {
-        for url in [root, attachments, backups, documentation, workflows] {
+        for url in [root, attachments, backups, documentation, workflows, skills] {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
     }

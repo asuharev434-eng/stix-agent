@@ -9,9 +9,14 @@ struct MessageView: View {
     @State private var preview: URL?
     @State private var editing = false
     @State private var editedText = ""
+    @State private var editingImage: Attachment?
+    @State private var diffRecord: UndoRecord?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if message.role == "model_settings" { ModelSettingsCard(chatID: chatID) }
+            else if message.role == "memory" { MemoryCard() }
+            else if message.role == "skills" { SkillsCard() }
+            else if message.role == "chat_search" { ChatSearchCard(initialQuery: message.text) }
             else if message.role == "permissions" { PermissionsCard() }
             else if message.role == "tool" {
                 DisclosureGroup {
@@ -46,7 +51,7 @@ struct MessageView: View {
                             Text(attachment.name).font(.system(size: store.textSize(12), weight: .medium)).lineLimit(1)
                             Spacer()
                             if attachment.kind == "image" {
-                                Button { store.selectChat(chatID); store.attachments = [attachment]; store.draft = "/image " } label: { Label("Редактировать", systemImage: "slider.horizontal.3") }.help("Описать изменения этой картинки")
+                                Button { editingImage = attachment } label: { Label("Редактировать", systemImage: "slider.horizontal.3") }.help("Маска, сравнение и варианты изображения")
                             }
                             Button { preview = URL(fileURLWithPath: attachment.path) } label: { Image(systemName: "eye") }.help("Быстрый просмотр")
                             Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: attachment.path)]) } label: { Image(systemName: "folder") }.help("Показать в Finder")
@@ -56,9 +61,20 @@ struct MessageView: View {
                 }
             }
             if let id = message.undoID {
-                Button { store.undoAction(id, chatID: chatID, messageID: message.id) } label: { Label("Отменить действие", systemImage: "arrow.uturn.backward") }.buttonStyle(.borderless).font(.system(size: store.textSize(12))).disabled(store.busy)
+                HStack {
+                    if let record = store.undos[id], record.kind == "write" {
+                        Button { diffRecord = record } label: { Label("Изменения файла", systemImage: "plus.forwardslash.minus") }
+                    }
+                    Button { store.undoAction(id, chatID: chatID, messageID: message.id) } label: { Label("Отменить действие", systemImage: "arrow.uturn.backward") }
+                }.buttonStyle(.borderless).font(.system(size: store.textSize(12))).disabled(store.busy)
             }
         }.frame(maxWidth: .infinity, alignment: .leading).quickLookPreview($preview)
+            .sheet(item: $editingImage) { attachment in
+                ImageEditorView(source: attachment, versions: store.chats.first(where: { $0.id == chatID })?.messages.flatMap(\.attachments).filter { $0.kind == "image" } ?? []) { command, files in
+                    store.selectChat(chatID); store.draft = command; store.attachments = files; store.send()
+                }
+            }
+            .sheet(item: $diffRecord) { record in FileDiffView(record: record, paths: store.storage.paths) }
             .contextMenu {
                 Button("Копировать") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) }
                 if message.role == "user" {

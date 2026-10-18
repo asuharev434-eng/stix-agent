@@ -66,6 +66,7 @@ struct ChatView: View {
                         .onChange(of: chat.messages.count) { _, _ in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
                         .onChange(of: store.pending?.id) { _, _ in withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
                         .onChange(of: store.selectedID) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+                        .onChange(of: store.focusedMessageID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) }; store.focusedMessageID = nil } }
                     }
                 }
                 if store.busy, store.activeChatID == store.selectedID,

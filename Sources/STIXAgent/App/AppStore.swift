@@ -10,6 +10,8 @@ final class AppStore: ObservableObject {
     @Published var selectedID: UUID?
     @Published var preferences = AppPreferences()
     @Published var models: [ModelDescriptor] = []
+    @Published var skills: [LocalSkill] = []
+    @Published var focusedMessageID: UUID?
     @Published var checkpoints: [String] = []
     @Published var draft = ""
     @Published var attachments: [Attachment] = []
@@ -63,6 +65,9 @@ final class AppStore: ObservableObject {
         } catch { self.error = "Не удалось прочитать историю: \(error.localizedDescription). Файл сохранён, запись остановлена."; canPersist = false }
         selectedID = chats.first?.id
         if chats.isEmpty { newChat() }
+        draft = currentChat?.savedDraft ?? ""; attachments = currentChat?.draftAttachments ?? []
+        do { try SkillLibrary(paths: storage.paths).seed(); reloadSkills() }
+        catch { self.error = "Скиллы: \(error.localizedDescription)" }
         for connection in preferences.connections { if let value = try? vault.get(connection.id), connection.auth == "basic", let colon = value.firstIndex(of: ":") { vault.remember(String(value[value.index(after: colon)...])) } }
         for secret in preferences.secrets { _ = try? vault.get(secret.id) }
     }
@@ -72,19 +77,26 @@ final class AppStore: ObservableObject {
     func index(_ id: UUID) -> Int? { chats.firstIndex { $0.id == id } }
     func save() {
         guard canPersist else { return }
+        if let id = selectedID, let i = index(id) { chats[i].savedDraft = vault.redact(draft); chats[i].draftAttachments = attachments }
         do { try storage.save(.init(chats: chats, preferences: preferences, undos: Array(undos.values), jobs: jobs)) }
         catch { self.error = "История не сохранена: \(error.localizedDescription)" }
     }
     func newChat(folder: URL? = nil) {
+        preserveDraft()
         let chat = Chat(folder: folder?.path, model: preferences.defaultModel)
         chats.insert(chat, at: 0); selectedID = chat.id; draft = ""; attachments = []; save()
     }
-    func selectChat(_ id: UUID) { selectedID = id; draft = ""; attachments = [] }
+    func preserveDraft() {
+        if let id = selectedID, let i = index(id) { chats[i].savedDraft = vault.redact(draft); chats[i].draftAttachments = attachments }
+    }
+    func selectChat(_ id: UUID) {
+        preserveDraft(); selectedID = id; draft = currentChat?.savedDraft ?? ""; attachments = currentChat?.draftAttachments ?? []; save()
+    }
     func deleteChat(_ id: UUID) {
         guard id != activeChatID else { error = "Сначала остановите текущую задачу"; return }
         for i in jobs.indices where jobs[i].chatID == id { jobs[i].status = "cancelled" }
         chats.removeAll { $0.id == id }
-        if selectedID == id { selectedID = chats.first?.id }
+        if selectedID == id { selectedID = chats.first?.id; draft = currentChat?.savedDraft ?? ""; attachments = currentChat?.draftAttachments ?? [] }
         if chats.isEmpty { newChat() }; save()
     }
     func setModel(_ model: String, image: Bool) {

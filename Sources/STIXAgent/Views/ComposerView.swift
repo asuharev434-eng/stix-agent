@@ -7,7 +7,7 @@ struct ComposerView: View {
     @State private var slashDismissed = false
     private var slashItems: [SlashCommandItem] {
         guard !slashDismissed, !(store.pendingHere && store.pending?.kind == .secret) else { return [] }
-        return SlashCommands.matches(draft: store.draft, items: SlashCommands.items(plugins: store.preferences.plugins, canSteer: canSteer))
+        return SlashCommands.matches(draft: store.draft, items: SlashCommands.items(plugins: store.preferences.plugins, canSteer: canSteer, skills: store.skills))
     }
     private func chooseSlash(_ item: SlashCommandItem, execute: Bool = true) {
         guard item.enabled else { return }
@@ -38,7 +38,10 @@ struct ComposerView: View {
                 }
             }
             .zIndex(10)
-            .onChange(of: store.draft) { _, _ in slashSelection = 0; slashDismissed = false }
+            .onChange(of: store.draft) { _, _ in slashSelection = 0; slashDismissed = false; store.preserveDraft() }
+            .task(id: store.draft) {
+                do { try await Task.sleep(nanoseconds: 500_000_000); try Task.checkCancellation(); store.save() } catch { }
+            }
     }
     private var composer: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -213,6 +216,7 @@ struct ComposerView: View {
                     .background(.primary.opacity(0.045), in: Capsule()).frame(maxWidth: 330, alignment: .leading).help("Модель")
                 Spacer(minLength: 5)
                 Button { store.chooseFiles() } label: { Image(systemName: "plus").font(.system(size: store.textSize(17))).frame(width: 30, height: 30).contentShape(Circle()) }.buttonStyle(.plain).help("Добавить файлы или папку").accessibilityLabel("Добавить файлы")
+                VoiceInputButton(text: $store.draft, language: store.preferences.voiceLanguage ?? "ru-RU").id(store.selectedID).disabled(store.pendingHere && store.pending?.kind == .secret)
                 Menu {
                     Button("Показать плагины") { store.draft = "/plugins"; store.send() }
                     Button("Добавить MCP-плагин") { store.draft = "Хочу добавить MCP-плагин. Спроси команду запуска или URL."; focused = true }

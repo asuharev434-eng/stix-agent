@@ -3,7 +3,8 @@ import Foundation
 /// A fresh session per operation makes cancellation and resource deadlines independent of other chats.
 struct LMStudioClient: Sendable {
     let endpoint: String
-    init(endpoint: String) { self.endpoint = endpoint }
+    let deadlines: InferenceDeadline.Limits
+    init(endpoint: String, deadlines: InferenceDeadline.Limits = .init()) { self.endpoint = endpoint; self.deadlines = deadlines }
 
     private func url(_ path: String) throws -> URL {
         guard var base = URLComponents(string: endpoint),
@@ -19,10 +20,10 @@ struct LMStudioClient: Sendable {
         return result
     }
 
-    private func session() -> URLSession {
+    private func session(resourceTimeout: TimeInterval = 600) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 120
-        config.timeoutIntervalForResource = 600
+        config.timeoutIntervalForResource = resourceTimeout
         config.httpCookieStorage = nil
         config.urlCache = nil
         // A local endpoint must never forward prompts or images to a redirect target.
@@ -47,6 +48,14 @@ struct LMStudioClient: Sendable {
         let models = Array(Set(entries.compactMap { entry -> String? in
             guard let id = entry["id"].string, !id.isEmpty, !id.lowercased().contains("embed") else { return nil }; return id
         })).sorted().map { ModelDescriptor(id: $0) }
+        if let snapshot = try? await nativeModelSnapshot(), let entries = snapshot["models"].array {
+            return models.map { model in
+                guard let item = entries.first(where: { $0["key"].string == model.id || ($0["loaded_instances"].array ?? []).contains(where: { $0["id"].string == model.id }) }) else { return model }
+                let loaded = (item["loaded_instances"].array ?? []).compactMap { $0["config"]["context_length"].int }.filter { $0 > 0 }.min()
+                return ModelDescriptor(id: model.id, kind: item["capabilities"]["vision"].bool == true ? "vlm" : item["type"].string, contextLimit: loaded ?? item["max_context_length"].int)
+            }
+        }
+        try Task.checkCancellation()
         // Optional metadata from LM Studio's local REST API; OpenAI-only servers still work.
         do {
             var metadataRequest = URLRequest(url: try url("/api/v0/models")); metadataRequest.timeoutInterval = 4
@@ -61,6 +70,39 @@ struct LMStudioClient: Sendable {
             }
         } catch { if Task.isCancelled { throw CancellationError() }; return models }
 
+    }
+
+    /// LM Studio native v1 only. A schema mismatch or unsupported endpoint leaves
+    /// residency management disabled; OpenAI-compatible Bionic remains usable.
+    func nativeModelSnapshot() async throws -> JSONValue {
+        let session = session(resourceTimeout: 6); defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: try url("/api/v1/models")); request.timeoutInterval = 4
+        let (bytes, response) = try await session.bytes(for: request)
+        var data = Data()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard data.count < 2_000_000 else { throw AgentError.message("Слишком много метаданных моделей") }
+            data.append(byte)
+        }
+        try Self.validate(response, body: data)
+        let snapshot = try JSONDecoder().decode(JSONValue.self, from: data)
+        guard snapshot["models"].array != nil else { throw AgentError.message("Native model management API недоступен") }
+        return snapshot
+    }
+
+    func unloadNativeInstance(_ id: String) async throws {
+        try ModelOrchestrator.validateEndpoint(endpoint)
+        let session = session(resourceTimeout: 20); defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: try url("/api/v1/models/unload")); request.timeoutInterval = 15
+        request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(JSONValue.object(["instance_id": .string(id)]))
+        let (bytes, response) = try await session.bytes(for: request)
+        var data = Data()
+        for try await byte in bytes {
+            try Task.checkCancellation(); guard data.count < 8192 else { throw AgentError.message("Слишком большой ответ выгрузки модели") }; data.append(byte)
+        }
+        try Self.validate(response, body: data)
+        guard try JSONDecoder().decode(JSONValue.self, from: data)["instance_id"].string == id else { throw AgentError.message("Сервер не подтвердил выгрузку модели") }
     }
 
     static func requestBody(model: String, messages: [LMMessage], tools: [ToolDefinition], thinking: Bool = false) throws -> Data {
@@ -95,6 +137,13 @@ struct LMStudioClient: Sendable {
     }
 
     func complete(model: String, messages: [LMMessage], tools: [ToolDefinition], thinking: Bool = false, onReasoning: @escaping @Sendable (String) async -> Void = { _ in }, onText: @escaping @Sendable (String) async -> Void) async throws -> LMReply {
+        let liveLimit = try await ModelResidency.shared.prepare(client: self, model: model)
+        var messages = messages
+        if let liveLimit {
+            let system = messages.filter { $0.role == "system" }
+            let budget = try ContextBudget.historyCharacters(contextLimit: liveLimit, system: system.compactMap(\.content).joined(separator: "\n"), tools: tools)
+            messages = system + ContextSummary.bounded(messages.filter { $0.role != "system" }, maxCharacters: budget)
+        }
         var request = URLRequest(url: try url("/v1/chat/completions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -102,6 +151,15 @@ struct LMStudioClient: Sendable {
         request.httpBody = try Self.requestBody(model: model, messages: messages, tools: tools, thinking: thinking)
         let session = session()
         defer { session.invalidateAndCancel() }
+        let deadline = InferenceDeadline(limits: deadlines)
+        let watchdog = Task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+                if deadline.expired() != nil { session.invalidateAndCancel(); return }
+            }
+        }
+        defer { watchdog.cancel() }
+        do {
         return try await withTaskCancellationHandler {
             let (bytes, response) = try await session.bytes(for: request)
             guard let http = response as? HTTPURLResponse else { throw AgentError.message("LM Studio: отсутствует HTTP-ответ") }
@@ -120,7 +178,9 @@ struct LMStudioClient: Sendable {
                 if byte == 10 {
                     guard let string = String(data: line, encoding: .utf8) else { throw AgentError.message("LM Studio: неверная кодировка потока") }
                     line.removeAll(keepingCapacity: true)
+                    let version = parser.progressVersion
                     if let text = try parser.consume(line: string) { await onText(text) }
+                    if parser.progressVersion != version { deadline.progress() }
                     if thinking, !parser.reasoningDelta.isEmpty { await onReasoning(parser.reasoningDelta) }
                     if parser.done { break }
                 } else { line.append(byte) }
@@ -135,6 +195,10 @@ struct LMStudioClient: Sendable {
             try Task.checkCancellation()
             return try parser.reply()
         } onCancel: { session.invalidateAndCancel() }
+        } catch {
+            if !Task.isCancelled, let message = deadline.expired() { throw AgentError.message(message) }
+            throw error
+        }
     }
 
     private static func validate(_ response: URLResponse, body: Data) throws {
@@ -154,6 +218,7 @@ struct LMStreamParser {
     private var thinkingStream = ThinkingStream()
     private(set) var reasoningDelta = ""
     private var calls: [Int: ToolCall] = [:]
+    private(set) var progressVersion = 0
     private var finished = false
     private(set) var done = false
 
@@ -184,6 +249,7 @@ struct LMStreamParser {
             finished = true
         }
         let delta = choice["delta"]
+        if delta["content"].string?.isEmpty == false || delta["reasoning_content"].string?.isEmpty == false || delta["reasoning"].string?.isEmpty == false || delta["tool_calls"].array?.isEmpty == false || finished { progressVersion += 1 }
         if let fragments = delta["tool_calls"].array {
             for fragment in fragments {
                 guard let index = fragment["index"].int, index >= 0, index < 128 else { throw AgentError.message("LM Studio: неверный индекс вызова инструмента") }

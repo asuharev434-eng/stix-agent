@@ -88,7 +88,12 @@ extension AppStore {
             try await approve(tool: name, arguments: args, title: "Применить план изменений?", detail: "План \(id). Предпросмотр находится выше в чате. Изменения проверяются повторно перед записью.", chatID: chatID)
             do {
                 let result = try await fileWork { try FileChangePlanner(paths: paths).apply(id: id, workingDirectory: folder) }
-                for item in result.results { if let undo = item.undo { registerUndo(undo) } }
+                for item in result.results {
+                    if let undo = item.undo {
+                        registerUndo(undo)
+                        addMessage(.init(role: "tool", text: item.text, attachments: undo.kind == "write" ? [.init(path: undo.source, kind: "file")] : [], toolName: undo.kind == "write" ? "write_file" : undo.kind == "move" ? "move_file" : "trash_file", status: "done", undoID: undo.id), to: chatID)
+                    }
+                }
                 return .init(text: result.results.map(\.text).joined(separator: "\n"))
             } catch let error as FileChangePlanner.ApplyFailure {
                 error.undoRecords.forEach(registerUndo); throw error

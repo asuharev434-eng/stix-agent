@@ -30,11 +30,18 @@ fi
 codesign --verify --deep --strict "$app_dir"
 if [[ "${1:-}" == "--install" ]]; then
     mkdir -p "$HOME/Applications"
+    staging_dir="$HOME/Applications/.STIX-Agent-$(uuidgen).app"
+    ditto "$app_dir" "$staging_dir"
+    codesign --verify --deep --strict "$staging_dir"
+    backup_dir=""
     if [[ -d "$HOME/Applications/STIX Agent.app" ]]; then
         backup_dir="$project_dir/dist/previous-$(date +%Y%m%d-%H%M%S).app"
-        ditto "$HOME/Applications/STIX Agent.app" "$backup_dir"
+        mv "$HOME/Applications/STIX Agent.app" "$backup_dir"
     fi
-    ditto "$app_dir" "$HOME/Applications/STIX Agent.app"
+    if ! mv "$staging_dir" "$HOME/Applications/STIX Agent.app"; then
+        if [[ -n "$backup_dir" ]]; then mv "$backup_dir" "$HOME/Applications/STIX Agent.app"; fi
+        exit 1
+    fi
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$HOME/Applications/STIX Agent.app"
     print "Installed: $HOME/Applications/STIX Agent.app"
 fi

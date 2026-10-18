@@ -217,6 +217,7 @@ struct FileChangePlanner: Sendable {
         var messages: [String] = []
         do {
             while let receipt = plan.receipts.last {
+                try Task.checkCancellation()
                 if try alreadyRestored(receipt, tools: tools) {
                     messages.append("Изменение уже отменено: \(receipt.source)")
                 } else {
@@ -235,6 +236,51 @@ struct FileChangePlanner: Sendable {
             throw ApplyFailure(planID: plan.id, undoRecords: plan.receipts,
                                errorDescription: "Отмена плана \(plan.id) остановлена: \(error.localizedDescription). Оставшиеся квитанции сохранены; устраните конфликт и повторите отмену.")
         }
+    }
+
+    /// Undo one independent file from a batch, keeping the remaining receipts durable.
+    /// A conflict leaves the journal intact, allowing retry without losing recovery data.
+    func rollback(id: String, receiptID: UUID) throws -> String {
+        Self.lock.lock(); defer { Self.lock.unlock() }
+        return try rollbackReceipt(in: load(id), receiptID: receiptID)
+    }
+
+    /// UI entry point for individual undo. Batch ownership is recovered from the
+    /// durable journal, so callers need not persist a second receipt-to-plan index.
+    func undo(_ receipt: UndoRecord) throws -> String {
+        Self.lock.lock(); defer { Self.lock.unlock() }
+        let directory = paths.backups.appendingPathComponent("plans", isDirectory: true)
+        guard fm.fileExists(atPath: directory.path) else { return try FileTools(paths: paths).undo(receipt) }
+        let entries = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        guard entries.count <= 1_000 else { throw AgentError.message("В журнале более 1000 планов; требуется архивирование старых записей") }
+        var owner: Plan?
+        for entry in entries where entry.pathExtension == "json" && UUID(uuidString: entry.deletingPathExtension().lastPathComponent) != nil {
+            let plan = try load(entry.deletingPathExtension().lastPathComponent)
+            guard let saved = plan.receipts.first(where: { $0.id == receipt.id }) else { continue }
+            guard owner == nil, saved.kind == receipt.kind, saved.source == receipt.source,
+                  saved.destination == receipt.destination, saved.backup == receipt.backup, saved.expectedDigest == receipt.expectedDigest else {
+                throw AgentError.message("Квитанция отмены не совпадает с журналом плана")
+            }
+            owner = plan
+        }
+        if let owner { return try rollbackReceipt(in: owner, receiptID: receipt.id) }
+        return try FileTools(paths: paths).undo(receipt)
+    }
+
+    private func rollbackReceipt(in savedPlan: Plan, receiptID: UUID) throws -> String {
+        var plan = savedPlan
+        guard ["applying", "rollbackFailed", "applied"].contains(plan.status),
+              let index = plan.receipts.firstIndex(where: { $0.id == receiptID }) else {
+            throw AgentError.message("Изменение уже отменено или не принадлежит этому плану")
+        }
+        let receipt = plan.receipts[index]
+        let tools = FileTools(paths: paths)
+        let message = try alreadyRestored(receipt, tools: tools)
+            ? "Изменение уже отменено: \(receipt.source)" : tools.undo(receipt)
+        plan.receipts.remove(at: index)
+        if plan.receipts.isEmpty { plan.status = "rolledBack"; plan.failure = nil }
+        try save(plan)
+        return message
     }
 
     private func load(_ id: String) throws -> Plan {

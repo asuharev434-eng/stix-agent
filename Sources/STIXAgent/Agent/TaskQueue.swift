@@ -89,7 +89,7 @@ extension AppStore {
                 guard let record = undos[receipt] else { continue }
                 do {
                     let paths = storage.paths
-                    _ = try await fileWork { try FileTools(paths: paths).undo(record) }
+                    _ = try await fileWork { try FileChangePlanner(paths: paths).undo(record) }
                     undos.removeValue(forKey: receipt)
                     if let i = index(job.chatID) { for j in chats[i].messages.indices where chats[i].messages[j].undoID == receipt { chats[i].messages[j].undoID = nil; chats[i].messages[j].status = "undone" } }
                     save()
