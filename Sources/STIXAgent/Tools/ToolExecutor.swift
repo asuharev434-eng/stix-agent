@@ -4,7 +4,7 @@ struct ToolOutcome { var text: String; var attachments: [Attachment] = []; var u
 
 extension AppStore {
     func allTools() -> [ToolDefinition] {
-        var list = ToolCatalog.builtins + ProductivityTools.definitions + ExtendedToolCatalog.definitions + ModelOrchestrator.definitions + ComputerTools.definitions + TaskControlTools.definitions + KnowledgeTools.definitions
+        var list = ToolCatalog.builtins + ProductivityTools.definitions + ExtendedToolCatalog.definitions + ModelOrchestrator.definitions + ComputerTools.definitions + TaskControlTools.definitions + KnowledgeTools.definitions + [ToolExposure.discovery]
         if preferences.webSearchEnabled != false { list += WebSearchClient.definitions }
         for (id, tools) in pluginTools {
             for tool in tools {
@@ -51,6 +51,12 @@ extension AppStore {
         if let result = try await executeProductivity(call.name, args: args, chatID: chatID) { return result }
         if let result = try await executeKnowledge(call.name, args: args, chatID: chatID) { return result }
         switch call.name {
+        case "discover_tools":
+            let query = try args.requiredString("query")
+            guard query.utf8.count <= 200 else { throw AgentError.message("Тема поиска инструментов слишком длинная") }
+            let matches = ToolExposure.matches(query: query, tools: allTools().filter { $0.name != "discover_tools" })
+            exposedToolNames.formUnion(matches.map(\.name))
+            return .init(text: matches.isEmpty ? "По этой теме инструментов не найдено. Уточни запрос к discover_tools." : "На следующем шаге доступны: " + matches.map { "\($0.name) — \($0.description)" }.joined(separator: "\n"))
         case "list_files": return .init(text: try await fileWork { try files.list(path: args.requiredString("path"), workingDirectory: folder) })
         case "read_file": return .init(text: try await fileWork { try files.read(path: args.requiredString("path"), workingDirectory: folder, offset: args["offset"].int ?? 0, limit: args["limit"].int ?? 30000) })
         case "search_files": return .init(text: try await fileWork { try files.search(path: args.requiredString("path"), query: args.requiredString("query"), workingDirectory: folder) })

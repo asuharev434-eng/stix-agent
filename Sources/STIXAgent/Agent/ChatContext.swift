@@ -12,7 +12,10 @@ extension AppStore {
             history.append(.init(role: "user", content: draft, imageURLs: attachments.filter { $0.kind == "image" }.map(\.path)))
         }
         let known = liveContextLimits[preferences.lmEndpoint + "|" + chat.model] != nil || models.first { $0.id == chat.model }?.contextLimitIsLoaded == true
-        return .estimate(limit: contextLimit(for: chat), knownLimit: known, system: systemPrompt(chatID: chatID), tools: allTools(), history: history)
+        let system = systemPrompt(chatID: chatID)
+        let request = includeDraft && selectedID == chatID && !draft.isEmpty ? draft : history.last(where: { $0.role == "user" })?.content ?? ""
+        let tools = ToolExposure.selected(from: allTools(), limit: contextLimit(for: chat), system: system, currentRequest: request, exposed: exposedToolNames)
+        return .estimate(limit: contextLimit(for: chat), knownLimit: known, system: system, tools: tools, history: history)
     }
     func requestContextCompaction(chatID: UUID, announce: Bool = false) {
         guard !busy, canPersist else { return }

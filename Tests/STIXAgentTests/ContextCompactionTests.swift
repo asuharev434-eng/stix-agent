@@ -2,6 +2,45 @@ import XCTest
 @testable import STIXAgent
 
 final class ContextCompactionTests: XCTestCase {
+    @MainActor func testLoadedSixteenKModelReceivesUsefulToolPalette() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AppStore(storage: .init(paths: .init(root: root)))
+        let chatID = try XCTUnwrap(store.selectedID)
+        let system = store.systemPrompt(chatID: chatID)
+        let tools = store.allTools()
+        let selected = ToolExposure.selected(from: tools, limit: 16384, system: system,
+            currentRequest: "Придумай сам и выполни какую-нибудь сложную задачу")
+        let window = ContextWindow.estimate(limit: 16384, knownLimit: true, system: system, tools: selected, history: [])
+        XCTAssertGreaterThanOrEqual(try ContextBudget.historyCharacters(contextLimit: 16384, system: system, tools: selected), 1024)
+        XCTAssertTrue(selected.contains { $0.name == "discover_tools" })
+        XCTAssertTrue(selected.contains { $0.name == "run_shell" })
+        XCTAssertLessThan(selected.count, tools.count)
+        XCTAssertGreaterThanOrEqual(window.remainingTokens, 3072)
+    }
+
+    @MainActor func testDiscoveringImageToolsExposesTheirSchemasOnNextRound() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AppStore(storage: .init(paths: .init(root: root)))
+        let chatID = try XCTUnwrap(store.selectedID)
+        let all = store.allTools()
+        let found = ToolExposure.matches(query: "отредактируй изображение", tools: all)
+        XCTAssertTrue(found.contains { $0.name == "generate_image" })
+        let selected = ToolExposure.selected(from: all, limit: 16384, system: store.systemPrompt(chatID: chatID),
+            currentRequest: "Продолжай", exposed: ["generate_image"])
+        XCTAssertTrue(selected.contains { $0.name == "generate_image" })
+    }
+
+    @MainActor func testDiscoveryToolUpdatesCurrentTaskPalette() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AppStore(storage: .init(paths: .init(root: root)))
+        let chatID = try XCTUnwrap(store.selectedID)
+        let result = try await store.execute(.init(id: "discovery", name: "discover_tools", arguments: "{\"query\":\"изображение\"}"), chatID: chatID)
+        XCTAssertTrue(result.text.contains("generate_image"))
+        XCTAssertTrue(store.exposedToolNames.contains("generate_image"))
+    }
     private var history: [LMMessage] {
         (0..<12).flatMap { i in [LMMessage(role: "user", content: "Task \(i) " + String(repeating: "a", count: 400)), LMMessage(role: "assistant", content: "Done \(i)")] }
     }

@@ -40,6 +40,7 @@ final class AppStore: ObservableObject {
     var task: Task<Void, Never>?
     var continuation: CheckedContinuation<InteractionAnswer, Never>?
     var taskApprovals: Set<String> = []
+    var exposedToolNames: Set<String> = []
     var undos: [UUID: UndoRecord] = [:]
     var streamedText: [UUID: String] = [:]
     var undoing: Set<UUID> = []
