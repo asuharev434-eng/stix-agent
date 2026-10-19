@@ -86,11 +86,15 @@ struct ChatMessage: Codable, Identifiable, Equatable {
     var undoID: UUID? = nil
     var createdAt = Date()
 }
+enum ChatMode: String, Codable { case agent, clean }
+
 struct Chat: Codable, Identifiable {
     var id = UUID()
     var title = "Новый чат"
     var folder: String? = nil
     var model = ""
+    var mode: ChatMode? = nil
+    var isClean: Bool { mode == .clean }
     var imageModel = "sd_xl_base_1.0.safetensors"
     var imagePromptModel: String? = nil
     var imagePromptLanguage: String? = nil

@@ -20,10 +20,10 @@ struct ContextWindow: Equatable {
     static func estimate(limit: Int?, knownLimit: Bool, system: String, tools: [ToolDefinition], history: [LMMessage]) -> Self {
         let capacity = max(1024, min(limit ?? 32768, 1_048_576))
         return .init(limit: capacity, knownLimit: knownLimit && limit != nil,
-                     systemTokens: tokens(system) + 256,
+                     systemTokens: system.isEmpty ? 0 : tokens(system) + 256,
                      toolTokens: tools.reduce(0) { $0 + tokens($1.wire.encoded) },
                      historyTokens: history.reduce(0) { $0 + messageTokens($1) },
-                     reserveTokens: min(4096, max(512, capacity / 5)))
+                     reserveTokens: system.isEmpty && tools.isEmpty && history.isEmpty ? 0 : min(4096, max(512, capacity / 5)))
     }
 }
 

@@ -21,15 +21,25 @@ extension AppStore {
             if let prefix = prefixes.first(where: { raw.lowercased().hasPrefix($0.lowercased()) }), steerCurrentTask(String(raw.dropFirst(prefix.count))) { draft = ""; return }
         }
         let executionPrompt: String
-        do { executionPrompt = try skillPrompt(text) ?? SlashCommands.pluginPrompt(text, plugins: preferences.plugins) ?? text }
+        do { executionPrompt = chats[i].isClean ? text : (try skillPrompt(text) ?? SlashCommands.pluginPrompt(text, plugins: preferences.plugins) ?? text) }
         catch { self.error = error.localizedDescription; return }
         let incoming = attachments
         draft = ""; attachments = []
-        if chats[i].messages.isEmpty || chats[i].title == "Новый чат" { chats[i].title = String((text.isEmpty ? incoming.first?.name ?? "Файлы" : text).prefix(52)) }
-        let userMessage = ChatMessage(role: "user", text: text, attachments: incoming)
-        addMessage(userMessage, to: id)
-        if handleLocalCommand(text, chatID: id) { return }
-        enqueue(prompt: executionPrompt, attachments: incoming, chatID: id, sourceMessageID: userMessage.id)
+        if chats[i].folder == nil && (chats[i].messages.isEmpty || chats[i].title == "Новый чат") { chats[i].title = String((text.isEmpty ? incoming.first?.name ?? "Файлы" : text).prefix(52)) }
+        if chats[i].isClean && (text == "/image" || text.hasPrefix("/image ") || text.hasPrefix("/image\n")) {
+            addMessage(.init(role: "user", text: text, attachments: incoming), to: id)
+            addMessage(.init(role: "assistant", text: "Чистый чат отправляет модели только сообщения этой переписки. Для /image создайте обычный чат."), to: id)
+            return
+        }
+        let previousMessageCount = chats[i].messages.count
+        if !chats[i].isClean && handleLocalCommand(text, chatID: id) {
+            if let chat = index(id) {
+                chats[chat].messages.insert(.init(role: "user", text: text, attachments: incoming), at: min(previousMessageCount, chats[chat].messages.count))
+                save()
+            }
+            return
+        }
+        enqueue(prompt: executionPrompt, attachments: incoming, chatID: id, sourceMessageID: UUID(), displayPrompt: text)
     }
     func handleLocalCommand(_ text: String, chatID: UUID) -> Bool {
         if handleKnowledgeCommand(text, chatID: chatID) { return true }
@@ -71,6 +81,7 @@ extension AppStore {
         }
     }
     func systemPrompt(chatID: UUID) -> String {
+        if chats.first(where: { $0.id == chatID })?.isClean == true { return "" }
         let folder = chats.first { $0.id == chatID }?.folder ?? FileManager.default.homeDirectoryForCurrentUser.path
         let connections = preferences.connections.map { "\($0.name): id=\($0.id), base=\($0.baseURL), docs=\($0.documentationPath)" }.joined(separator: "\n")
         let pluginList = preferences.plugins.map { "\($0.name) id=\($0.id) enabled=\($0.enabled)" }.joined(separator: "\n")
@@ -98,6 +109,7 @@ extension AppStore {
     func runAgent(text: String, attachments: [Attachment], chatID: UUID, sourceMessageID: UUID? = nil) async throws {
         exposedToolNames = []
         guard let i = index(chatID) else { throw CancellationError() }
+        let clean = chats[i].isClean
         var model = chats[i].model
         if model.isEmpty {
             updateTaskPhase("Поиск локальных моделей…")
@@ -109,7 +121,7 @@ extension AppStore {
         let attachmentText = prepared.text
         let hasImages = !prepared.imageURLs.isEmpty
         let mainSeesImages = models.first(where: { $0.id == model })?.kind == "vlm" || preferences.modelRoles?["vision"] == model || ModelOrchestrator.inferredVision(model)
-        let visionNote = hasImages && !mainSeesImages ? "Изображения доступны по путям вложений. Текущая основная модель получает OCR. Если нужен визуальный анализ, вызови delegate_model с vision-моделью и image_paths; OCR не заменяет визуальный анализ." : ""
+        let visionNote = !clean && hasImages && !mainSeesImages ? "Изображения доступны по путям вложений. Текущая основная модель получает OCR. Если нужен визуальный анализ, вызови delegate_model с vision-моделью и image_paths; OCR не заменяет визуальный анализ." : ""
         let input = vault.redact([text, attachmentText, visionNote].filter { !$0.isEmpty }.joined(separator: "\n\n"))
         guard let current = index(chatID) else { throw CancellationError() }
         if let id = activeJobID, let jobIndex = jobs.firstIndex(where: { $0.id == id }) { jobs[jobIndex].inputRecorded = true }
@@ -122,7 +134,7 @@ extension AppStore {
             ?? (chats[current].history.count - 1)
         var ledger = ToolExecutionLedger(history: Array(chats[current].history.dropFirst(start)))
         var concludeRepeatedTool = false
-        for round in 0..<preferences.maxToolRounds {
+        for round in 0..<(clean ? 1 : preferences.maxToolRounds) {
             try Task.checkCancellation()
             guard index(chatID) != nil else { throw CancellationError() }
             if applyPendingCorrections(chatID: chatID) { concludeRepeatedTool = false }
@@ -134,15 +146,15 @@ extension AppStore {
             let store = self
             do {
                 let conclusion = concludeRepeatedTool ? "\nПовторный вызов инструмента остановлен. Используй сохранённые результаты; если результат неизвестен после прерывания, честно укажи необходимость проверки состояния. Дай краткий итог без инструментов, укажи фактический результат и честно назови оставшиеся невыполненные части, если они есть." : ""
-                let prompt = systemPrompt(chatID: chatID) + conclusion
+                let prompt = clean ? "" : systemPrompt(chatID: chatID) + conclusion
                 if let live = try await ModelResidency.shared.prepare(client: LMStudioClient(endpoint: endpoint), model: model) {
                     liveContextLimits[endpoint + "|" + model] = live
                 }
-                let tools = concludeRepeatedTool ? [] : ToolExposure.selected(from: allTools(), limit: index(chatID).flatMap { contextLimit(for: chats[$0]) }, system: prompt, currentRequest: text, exposed: exposedToolNames)
+                let tools = clean || concludeRepeatedTool ? [] : toolsForRequest(chatID: chatID, system: prompt, currentRequest: text)
                 updateTaskPhase("Подготовка контекста и модели…")
                 let history = try await preparedContext(chatID: chatID, model: model, system: prompt, tools: tools)
 
-                reply = try await LMStudioClient(endpoint: endpoint).complete(model: model, messages: [.init(role: "system", content: prompt)] + history, tools: tools, maxOutputTokens: resourceOutputLimit, thinking: preferences.thinking ?? false, onPhase: { phase in await store.updateTaskPhase(phase) }, onRequest: { [model] finalMessages in
+                reply = try await LMStudioClient(endpoint: endpoint).complete(model: model, messages: modelMessages(chatID: chatID, system: prompt, history: history), tools: tools, maxOutputTokens: resourceOutputLimit, thinking: preferences.thinking ?? false, onPhase: { phase in await store.updateTaskPhase(phase) }, onRequest: { [model] finalMessages in
                     await store.captureContextRequest(model: model, messages: finalMessages, tools: tools, chatID: chatID)
                 }, onReasoning: { token in
                     await store.receiveReasoning(token)
@@ -155,6 +167,12 @@ extension AppStore {
                 throw error
             }
             try Task.checkCancellation()
+            if clean && !reply.toolCalls.isEmpty {
+                let notice = "Модель вернула вызов инструмента, но чистый чат не выполняет действия. Создайте обычный чат для агентных задач."
+                editMessage(message.id, chatID: chatID) { $0.text = notice; $0.status = "error" }
+                if let j = index(chatID) { chats[j].history.append(.init(role: "assistant", content: notice)) }; save()
+                return
+            }
             streamedText.removeValue(forKey: message.id)
             let safeContent = ModelOutput.clean(vault.redact(reply.content))
             let safeCalls = reply.toolCalls.map { ToolCall(id: $0.id, name: $0.name, arguments: vault.redact($0.arguments)) }

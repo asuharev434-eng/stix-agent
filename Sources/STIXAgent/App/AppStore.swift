@@ -22,6 +22,7 @@ final class AppStore: ObservableObject {
     @Published var attachments: [Attachment] = []
     @Published var busy = false
     @Published var compactingChatID: UUID?
+    @Published var pendingCompactionChatID: UUID?
     @Published var contextNotices: [UUID: String] = [:]
     var contextAutoFailures: [UUID: String] = [:]
     @Published var liveContextLimits: [String: Int] = [:]
@@ -58,7 +59,7 @@ final class AppStore: ObservableObject {
             if let state = try storage.load() {
                 features = state.features ?? FeatureConfiguration()
                 jobs = state.jobs ?? []
-                for i in jobs.indices where ["running", "queued"].contains(jobs[i].status) { jobs[i].status = "interrupted" }
+                for i in jobs.indices where jobs[i].status == "running" || (jobs[i].status == "queued" && jobs[i].started == true) { jobs[i].status = "interrupted" }
                 chats = state.chats; preferences = state.preferences; memoryEntries = state.memoryEntries ?? []; projects = state.projects ?? []; memoryRevisions = state.memoryRevisions ?? []; undos = Dictionary(uniqueKeysWithValues: state.undos.map { ($0.id, $0) })
                 for i in chats.indices {
                     let legacyInterrupted = chats[i].messages.contains(where: { $0.status == "running" })
@@ -99,9 +100,10 @@ final class AppStore: ObservableObject {
         do { try synchronizeProjects(); try storage.save(persistedState()) }
         catch { self.error = "История не сохранена: \(error.localizedDescription). Запись остановлена; перезапустите приложение для восстановления журнала."; canPersist = false; task?.cancel() }
     }
-    func newChat(folder: URL? = nil) {
+    func newChat(folder: URL? = nil, mode: ChatMode = .agent) {
         preserveDraft()
-        let chat = Chat(folder: folder?.path, model: preferences.defaultModel)
+        var chat = Chat(folder: folder?.path, model: preferences.defaultModel, mode: mode)
+        chat.title = folder?.lastPathComponent ?? (mode == .clean ? "Чистый чат" : "Новый чат")
         chats.insert(chat, at: 0); selectedID = chat.id; draft = ""; attachments = []; save()
     }
     func preserveDraft() {
@@ -112,6 +114,7 @@ final class AppStore: ObservableObject {
     }
     func deleteChat(_ id: UUID) {
         guard id != activeChatID else { error = "Сначала остановите текущую задачу"; return }
+        if pendingCompactionChatID == id { pendingCompactionChatID = nil }
         for i in jobs.indices where jobs[i].chatID == id { jobs[i].status = "cancelled" }
         chats.removeAll { $0.id == id }
         memoryEntries.removeAll { $0.scope == .chat && $0.ownerID == id }
@@ -163,7 +166,6 @@ final class AppStore: ObservableObject {
     func boot() async {
         guard !booting else { return }
         booting = true; defer { booting = false }
-        startFeatureMonitor()
         let initialLM = preferences.lmEndpoint, initialComfy = preferences.comfyEndpoint
         async let comfyResult: Result<Bool, Error> = capture { try await LocalServices.ensureComfyServer(endpoint: initialComfy, paths: storage.paths) }
         let modelEndpoint = await LocalServices.ensureModelServer(preferred: initialLM)
@@ -200,6 +202,8 @@ final class AppStore: ObservableObject {
             do { try await activatePlugin(config) }
             catch { self.error = "Плагин \(config.name): \(vault.redact(error.localizedDescription))" }
         }
+        startNextJob()
+        startFeatureMonitor()
     }
     func capture<T>(_ operation: () async throws -> T) async -> Result<T, Error> { do { return .success(try await operation()) } catch { return .failure(error) } }
     func stop() {

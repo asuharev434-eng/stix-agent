@@ -14,6 +14,7 @@ final class QueueControlTests: XCTestCase {
         let queued = store.jobs[1].id
         store.editQueuedJob(queued, prompt: "updated")
         XCTAssertEqual(store.currentChat?.messages.first?.text, "updated")
+        XCTAssertEqual(store.jobs[1].displayPrompt, "updated")
         store.moveQueuedJob(queued, offset: 1)
         XCTAssertEqual(store.jobs.last?.id, queued)
         store.steerQueuedJob(queued)
@@ -25,6 +26,30 @@ final class QueueControlTests: XCTestCase {
         XCTAssertNil(store.task)
         let restored = AppStore(storage: storage)
         XCTAssertEqual(restored.currentChat?.history, store.currentChat?.history)
+    }
+    @MainActor func testQueuedMessagesAppearOnlyWhenTheirJobStarts() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = StateStorage(paths: .init(root: root))
+        let store = AppStore(storage: storage), chat = try XCTUnwrap(store.selectedID)
+        store.busy = true
+        store.draft = "Первое сообщение"
+        store.send()
+        store.draft = "Второе сообщение"
+        store.send()
+        XCTAssertEqual(store.jobs.map(\.status), ["queued", "queued"])
+        XCTAssertTrue(store.currentChat?.messages.isEmpty == true)
+        XCTAssertEqual(store.jobs.map { $0.displayPrompt }, ["Первое сообщение", "Второе сообщение"])
+
+        let restored = AppStore(storage: storage)
+        XCTAssertEqual(restored.jobs.map(\.status), ["queued", "queued"])
+        XCTAssertTrue(restored.currentChat?.messages.isEmpty == true)
+        restored.revealQueuedInput(restored.jobs[0].id)
+        XCTAssertEqual(restored.currentChat?.messages.map(\.text), ["Первое сообщение"])
+        restored.revealQueuedInput(restored.jobs[0].id)
+        XCTAssertEqual(restored.currentChat?.messages.count, 1)
+        restored.cancelJob(restored.jobs[1].id)
+        XCTAssertEqual(restored.currentChat?.messages.count, 1)
     }
     @MainActor func testCorrectionsResolveObsoleteApprovalAndProtectSecretInput() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -14,11 +14,24 @@ extension AppStore {
         let known = liveContextLimits[preferences.lmEndpoint + "|" + chat.model] != nil || models.first { $0.id == chat.model }?.contextLimitIsLoaded == true
         let system = systemPrompt(chatID: chatID)
         let request = includeDraft && selectedID == chatID && !draft.isEmpty ? draft : history.last(where: { $0.role == "user" })?.content ?? ""
-        let tools = ToolExposure.selected(from: allTools(), limit: contextLimit(for: chat), system: system, currentRequest: request, exposed: exposedToolNames)
+        let tools = toolsForRequest(chatID: chatID, system: system, currentRequest: request)
         return .estimate(limit: contextLimit(for: chat), knownLimit: known, system: system, tools: tools, history: history)
     }
+    func toolsForRequest(chatID: UUID, system: String, currentRequest: String) -> [ToolDefinition] {
+        guard let i = index(chatID), !chats[i].isClean else { return [] }
+        return ToolExposure.selected(from: allTools(), limit: contextLimit(for: chats[i]), system: system, currentRequest: currentRequest, exposed: exposedToolNames)
+    }
+    func modelMessages(chatID: UUID, system: String, history: [LMMessage]) -> [LMMessage] {
+        if index(chatID).map({ chats[$0].isClean }) == true { return history }
+        return [.init(role: "system", content: system)] + history
+    }
     func requestContextCompaction(chatID: UUID, announce: Bool = false) {
-        guard !busy, canPersist else { return }
+        guard canPersist, index(chatID) != nil else { return }
+        if busy {
+            pendingCompactionChatID = chatID
+            contextNotices[chatID] = "Сжатие запланировано после текущей задачи."
+            return
+        }
         busy = true; activeChatID = chatID; contextNotices[chatID] = nil
         task = Task { [weak self] in
             guard let self else { return }
@@ -37,9 +50,13 @@ extension AppStore {
     func compactContext(chatID: UUID, summarize: (([LMMessage], Int) async throws -> String)? = nil) async throws {
         guard canPersist, let i = index(chatID) else { throw AgentError.message("История недоступна для сохранения") }
         let chat = chats[i], endpoint = preferences.lmEndpoint
+        guard !chat.isClean else { throw AgentError.message("Чистый чат не использует память и сжатие. Создайте обычный чат для агентных задач.") }
         guard !chat.model.isEmpty else { throw AgentError.message("Сначала выберите текстовую модель") }
         guard let plan = ContextCompaction.plan(history: chat.history, checkpoint: chat.contextCheckpoint) else {
-            contextNotices[chatID] = "Пока нечего сжимать: последние сообщения сохраняются целиком."; return
+            let window = contextWindow(chatID: chatID)
+            let fixed = (window?.systemTokens ?? 0) + (window?.toolTokens ?? 0) + (window?.reserveTokens ?? 0)
+            contextNotices[chatID] = "Пока нечего сжимать: текущая задача и последние сообщения сохраняются целиком. Инструкции, инструменты и резерв ответа занимают примерно \(fixed.formatted()) токенов; если места мало, увеличьте окно модели или выберите другую модель."
+            return
         }
         guard compactingChatID == nil else { throw AgentError.message("Сжатие уже выполняется") }
         compactingChatID = chatID; contextNotices[chatID] = nil
@@ -106,7 +123,7 @@ extension AppStore {
         guard let i = index(chatID), chats[i].model == model else { throw AgentError.message("Выбранная модель изменилась. Продолжите задачу с новой моделью.") }
         let attemptKey = model + "|" + String(contextLimit(for: chats[i]) ?? 32768) + "|" + ContextCompaction.digest(chats[i].history.filter { $0.role == "user" })
         let window = ContextWindow.estimate(limit: contextLimit(for: chats[i]), knownLimit: true, system: system, tools: tools, history: ContextCompaction.effective(history: chats[i].history, checkpoint: chats[i].contextCheckpoint))
-        if contextAutoFailures[chatID] != attemptKey, window.shouldCompact,
+        if !chats[i].isClean, contextAutoFailures[chatID] != attemptKey, window.shouldCompact,
            ContextCompaction.plan(history: chats[i].history, checkpoint: chats[i].contextCheckpoint) != nil {
             do { try await compactContext(chatID: chatID, summarize: summarize); contextAutoFailures[chatID] = nil }
             catch {

@@ -122,6 +122,7 @@ struct MarkdownMessageBody: View {
     let text: String
     @Environment(\.colorScheme) private var colorScheme
     private struct Block: Identifiable { let id: Int; let code: Bool; let language: String; let text: String }
+    private enum Segment { case line(String), table(MarkdownTable) }
     private var blocks: [Block] {
         var result: [Block] = []; var lines: [String] = []; var code = false; var language = ""
         func flush() { if !lines.isEmpty { result.append(Block(id: result.count, code: code, language: language, text: lines.joined(separator: "\n"))); lines = [] } }
@@ -131,6 +132,21 @@ struct MarkdownMessageBody: View {
             } else { lines.append(line) }
         }
         flush(); return result
+    }
+    private func segments(_ text: String) -> [Segment] {
+        let lines = text.components(separatedBy: "\n")
+        var result: [Segment] = []
+        var index = 0
+        while index < lines.count {
+            if let table = MarkdownTable.parse(lines: lines, at: index) {
+                result.append(.table(table))
+                index += table.consumedLines
+            } else {
+                result.append(.line(lines[index]))
+                index += 1
+            }
+        }
+        return result
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -145,8 +161,11 @@ struct MarkdownMessageBody: View {
                     }.agentCard(cornerRadius: 18).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(block.text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                            markdownLine(line)
+                        ForEach(Array(segments(block.text).enumerated()), id: \.offset) { _, segment in
+                            switch segment {
+                            case .line(let line): markdownLine(line)
+                            case .table(let table): MarkdownTableCard(table: table)
+                            }
                         }
                     }.textSelection(.enabled)
                 }
@@ -165,5 +184,93 @@ struct MarkdownMessageBody: View {
     }
     private func rich(_ value: String) -> Text {
         Text((try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value))
+    }
+}
+
+struct MarkdownTable {
+    let headers: [String]
+    let rows: [[String]]
+    let consumedLines: Int
+
+    static func parse(lines: [String], at start: Int) -> Self? {
+        guard start + 1 < lines.count else { return nil }
+        let headers = cells(lines[start]), separator = cells(lines[start + 1])
+        guard headers.count >= 2, headers.count == separator.count,
+              separator.allSatisfy({ cell in
+                  let marks = cell.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+                  return marks.count >= 3 && marks.allSatisfy { $0 == "-" }
+              }) else { return nil }
+        var rows: [[String]] = []
+        var next = start + 2
+        while next < lines.count {
+            let line = lines[next]
+            guard line.contains("|") else { break }
+            var row = cells(line)
+            // Small models often put "name – description" in one cell despite
+            // producing a two-column header. Render that as the intended row.
+            if row.count == 1, headers.count == 2,
+               let split = [" – ", " — ", " - "].compactMap({ row[0].range(of: $0) }).first {
+                row = [String(row[0][..<split.lowerBound]), String(row[0][split.upperBound...])]
+            }
+            guard row.count == headers.count else { break }
+            rows.append(row)
+            next += 1
+        }
+        return .init(headers: headers, rows: rows, consumedLines: next - start)
+    }
+
+    private static func cells(_ line: String) -> [String] {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.contains("|") else { return [] }
+        var values: [String] = [], current = "", escaped = false
+        for character in trimmed {
+            if escaped {
+                if character != "|" && character != "\\" { current.append("\\") }
+                current.append(character); escaped = false
+            }
+            else if character == "\\" { escaped = true }
+            else if character == "|" { values.append(current.trimmingCharacters(in: .whitespaces)); current = "" }
+            else { current.append(character) }
+        }
+        if escaped { current.append("\\") }
+        values.append(current.trimmingCharacters(in: .whitespaces))
+        if trimmed.hasPrefix("|") { values.removeFirst() }
+        if trimmed.hasSuffix("|") { values.removeLast() }
+        return values
+    }
+}
+
+private struct MarkdownTableCard: View {
+    @EnvironmentObject var store: AppStore
+    let table: MarkdownTable
+    private var firstColumnWidth: CGFloat { table.headers.count == 2 ? 190 : 150 }
+    var body: some View {
+        VStack(spacing: 0) {
+            row(table.headers, header: true)
+                .background(Color.primary.opacity(0.06))
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { index, cells in
+                Divider().opacity(0.4)
+                row(cells, header: false)
+                    .background(Color.primary.opacity(index.isMultiple(of: 2) ? 0.015 : 0.04))
+            }
+        }
+        .agentCard(cornerRadius: 16)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.vertical, 5)
+    }
+    private func row(_ cells: [String], header: Bool) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            ForEach(cells.indices, id: \.self) { index in
+                Text((try? AttributedString(markdown: cells[index], options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(cells[index]))
+                    .font(.system(size: store.textSize(header ? 12 : 13), weight: header || index == 0 ? .semibold : .regular))
+                    .foregroundStyle(header ? Color.secondary : Color.primary)
+                    .frame(maxWidth: index == cells.count - 1 ? .infinity : nil, alignment: .leading)
+                    .frame(width: index == cells.count - 1 ? nil : firstColumnWidth, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, header ? 10 : 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

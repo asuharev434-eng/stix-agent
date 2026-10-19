@@ -88,6 +88,34 @@ final class ContextCompactionTests: XCTestCase {
         XCTAssertEqual(result, ContextSummary.paired(result))
         XCTAssertEqual(source.count, 25)
     }
+    func testShortConversationCanCompactEarlierTurnAndKeepLatestRequest() throws {
+        let source: [LMMessage] = [
+            .init(role: "user", content: "First task " + String(repeating: "x", count: 4000)),
+            .init(role: "assistant", content: "First answer"),
+            .init(role: "user", content: "Current task"),
+            .init(role: "assistant", content: "Current answer")
+        ]
+        let plan = try XCTUnwrap(ContextCompaction.plan(history: source, checkpoint: nil))
+        XCTAssertEqual(plan.coveredCount, 2)
+        let effective = ContextCompaction.effective(history: source, checkpoint: ContextCompaction.checkpoint(plan: plan, summary: "First task completed", model: "local"))
+        XCTAssertEqual(effective.suffix(2), source.suffix(2))
+    }
+    func testShortToolLoopKeepsCurrentRequestAndLastToolGroup() throws {
+        let source: [LMMessage] = [
+            .init(role: "user", content: "Keep this task"),
+            .init(role: "assistant", content: nil, toolCalls: [.init(id: "one", name: "write_file", arguments: "{}")]),
+            .init(role: "tool", content: "Saved one", toolCallID: "one"),
+            .init(role: "assistant", content: nil, toolCalls: [.init(id: "two", name: "write_file", arguments: "{}")]),
+            .init(role: "tool", content: "Saved two", toolCallID: "two"),
+            .init(role: "assistant", content: "Done")
+        ]
+        let plan = try XCTUnwrap(ContextCompaction.plan(history: source, checkpoint: nil))
+        XCTAssertEqual(plan.coveredCount, 3)
+        let effective = ContextCompaction.effective(history: source, checkpoint: ContextCompaction.checkpoint(plan: plan, summary: "First write completed", model: "local"))
+        XCTAssertTrue(effective.contains { $0.content == "Keep this task" })
+        XCTAssertEqual(effective.suffix(3), source.suffix(3))
+        XCTAssertEqual(effective, ContextSummary.paired(effective))
+    }
     func testIncrementalPlanDoesNotSummarizeCoveredPrefixAgain() throws {
         let first = try XCTUnwrap(ContextCompaction.plan(history: history, checkpoint: nil))
         let checkpoint = ContextCompaction.checkpoint(plan: first, summary: "Old summary", model: "local")
@@ -129,6 +157,17 @@ final class ContextCompactionTests: XCTestCase {
         XCTAssertNil(store.chats[0].contextCheckpoint)
         XCTAssertNil(store.compactingChatID)
         XCTAssertEqual(store.chats[0].history, history)
+    }
+    @MainActor func testManualCompactionCanBeQueuedWhileTaskIsBusy() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AppStore(storage: .init(paths: .init(root: root)))
+        let chatID = try XCTUnwrap(store.selectedID)
+        store.busy = true
+        store.requestContextCompaction(chatID: chatID)
+        XCTAssertEqual(store.pendingCompactionChatID, chatID)
+        XCTAssertEqual(store.contextNotices[chatID], "Сжатие запланировано после текущей задачи.")
+        XCTAssertEqual(store.chats[0].history.count, 0)
     }
     @MainActor func testFailedWriteNeverPublishesCheckpoint() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

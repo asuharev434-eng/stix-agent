@@ -154,7 +154,7 @@ struct LMStudioClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        let reserve = ContextWindow.estimate(limit: liveLimit, knownLimit: liveLimit != nil, system: "", tools: [], history: []).reserveTokens
+        let reserve = ContextWindow.estimate(limit: liveLimit, knownLimit: liveLimit != nil, system: "", tools: tools, history: messages).reserveTokens
         request.httpBody = try Self.requestBody(model: model, messages: messages, tools: tools, maxOutputTokens: min(maxOutputTokens ?? reserve, reserve), thinking: thinking)
         await onRequest(messages)
         await onPhase("Обработка запроса локальной моделью…")

@@ -4,6 +4,7 @@ struct AgentJob: Codable, Identifiable {
     var id = UUID()
     var chatID: UUID
     var prompt: String
+    var displayPrompt: String? = nil
     var attachments: [Attachment] = []
     var status = "queued"
     var createdAt = Date()
@@ -35,12 +36,27 @@ struct AgentJob: Codable, Identifiable {
 }
 
 extension AppStore {
-    func enqueue(prompt: String, attachments: [Attachment], chatID: UUID, sourceMessageID: UUID? = nil) {
-        jobs.append(.init(chatID: chatID, prompt: prompt, attachments: attachments, sourceMessageID: sourceMessageID))
+    func enqueue(prompt: String, attachments: [Attachment], chatID: UUID, sourceMessageID: UUID? = nil, displayPrompt: String? = nil) {
+        jobs.append(.init(chatID: chatID, prompt: prompt, displayPrompt: displayPrompt, attachments: attachments, sourceMessageID: sourceMessageID))
         save(); startNextJob()
     }
+    func revealQueuedInput(_ id: UUID) {
+        guard let i = jobs.firstIndex(where: { $0.id == id }), let messageID = jobs[i].sourceMessageID,
+              let chat = index(jobs[i].chatID), !chats[chat].messages.contains(where: { $0.id == messageID }) else { return }
+        let message = ChatMessage(id: messageID, role: "user", text: jobs[i].displayPrompt ?? jobs[i].prompt, attachments: jobs[i].attachments)
+        chats[chat].messages.append(message)
+        chats[chat].updatedAt = Date()
+        save()
+    }
     func startNextJob() {
+        guard canPersist, !busy else { return }
+        if let chatID = pendingCompactionChatID {
+            pendingCompactionChatID = nil
+            if index(chatID) != nil { requestContextCompaction(chatID: chatID); return }
+        }
         guard canPersist, !busy, let job = jobs.first(where: { $0.status == "queued" && index($0.chatID) != nil && !($0.automationEventID != nil && resourcesSuspendBackground) }) else { return }
+        revealQueuedInput(job.id)
+        guard canPersist else { return }
         busy = true; activeChatID = job.chatID; activeJobID = job.id; taskApprovals = []
         let resuming = job.inputRecorded == true
         updateJob(job.id, status: "running")

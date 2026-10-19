@@ -2,7 +2,7 @@
 
 Текущий установщик — предварительная версия для Mac с Apple Silicon и macOS 14 или новее. Она подписана Developer ID, но пока не прошла нотариальное заверение Apple. Модели в DMG не включены: для чата нужен локальный API LM Studio/Bionic с загруженной моделью, для генерации изображений — ComfyUI с установленным checkpoint.
 
-1. Скачайте DMG из [GitHub Release](https://github.com/asuharev434-eng/stix-agent/releases/tag/v0.8.2-preview.1). Сравните SHA-256 с суммой в описании релиза: `shasum -a 256 ~/Downloads/STIX-Agent-0.8.2-macOS-arm64.dmg`.
+1. Скачайте DMG из [GitHub Release](https://github.com/asuharev434-eng/stix-agent/releases/tag/v0.8.3-preview.1). Сравните SHA-256 с суммой в описании релиза: `shasum -a 256 ~/Downloads/STIX-Agent-0.8.3-macOS-arm64.dmg`.
 2. Откройте DMG и перетащите `STIX Agent.app` в `Applications`.
 3. Запустите приложение через Finder. Если macOS блокирует запуск из-за отсутствия нотариального заверения, откройте **Системные настройки → Конфиденциальность и безопасность**, проверьте, что блокируется именно STIX Agent, и выберите **Открыть всё равно**. Не отключайте Gatekeeper целиком.
 4. Разрешайте доступ к файлам и системным функциям по мере необходимости. Переписка и память сохраняются локально в `~/Library/Application Support/STIX Agent/`.

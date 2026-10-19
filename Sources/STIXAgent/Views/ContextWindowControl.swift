@@ -5,6 +5,7 @@ struct ContextWindowControl: View {
     @State private var expanded = false
     private var window: ContextWindow? { store.selectedID.flatMap { store.contextWindow(chatID: $0, includeDraft: true) } }
     private var compacting: Bool { store.compactingChatID == store.selectedID && store.compactingChatID != nil }
+    private var queued: Bool { store.pendingCompactionChatID == store.selectedID && store.pendingCompactionChatID != nil }
     private var tint: Color { (window?.fraction ?? 0) >= 0.9 ? .orange : .secondary }
     var body: some View {
         Button { expanded.toggle() } label: {
@@ -63,18 +64,23 @@ struct ContextWindowControl: View {
                 Label("Сжатий: \(checkpoint.revision) · \(checkpoint.createdAt.formatted(date: .omitted, time: .shortened))", systemImage: "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text("Автоматическое сжатие — при заполнении 75%. Задача, последние шаги и полная переписка сохраняются.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if compacting {
-                HStack { ProgressView().controlSize(.small); Text(store.activity).font(.caption) }
-            } else if let notice = store.selectedID.flatMap({ store.contextNotices[$0] }) {
-                Text(notice).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if store.currentChat?.isClean == true {
+                Text("Чистый чат: системные инструкции, память, инструменты и сжатие отключены. При создании контекст равен нулю; затем он содержит только сообщения этого чата.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Автоматическое сжатие старой переписки — при заполнении 75%. Задача, последние шаги и полная переписка сохраняются. Инструкции и инструменты сжатию не подлежат.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if compacting {
+                    HStack { ProgressView().controlSize(.small); Text(store.activity).font(.caption) }
+                } else if let notice = store.selectedID.flatMap({ store.contextNotices[$0] }) {
+                    Text(notice).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Button {
+                    if let id = store.selectedID { store.requestContextCompaction(chatID: id) }
+                } label: {
+                    Label(compacting ? "Сжимаю…" : queued ? "Сжатие в очереди" : store.busy ? "Сжать после задачи" : "Сжать сейчас", systemImage: "arrow.down.right.and.arrow.up.left").frame(maxWidth: .infinity)
+                }.buttonStyle(.bordered).disabled(compacting || queued || !store.canPersist || store.currentChat == nil)
             }
-            Button {
-                if let id = store.selectedID { store.requestContextCompaction(chatID: id) }
-            } label: {
-                Label(compacting ? "Сжимаю…" : "Сжать сейчас", systemImage: "arrow.down.right.and.arrow.up.left").frame(maxWidth: .infinity)
-            }.buttonStyle(.bordered).disabled(store.busy || store.currentChat?.model.isEmpty != false || store.currentChat.flatMap { ContextCompaction.plan(history: $0.history, checkpoint: $0.contextCheckpoint) } == nil)
         }
     }
     private func contextSection(_ title: String, text: String) -> some View {

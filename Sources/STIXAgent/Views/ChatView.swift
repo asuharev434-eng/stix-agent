@@ -17,8 +17,11 @@ struct ChatView: View {
                 HStack {
                     Text("STIX").font(.system(size: store.textSize(16), weight: .semibold)).tracking(2)
                     Spacer()
-                    Button { store.newChat() } label: { Image(systemName: "square.and.pencil").font(.system(size: store.textSize(16))).frame(width: 32, height: 32).contentShape(Circle()) }
-                        .buttonStyle(.plain).help("Новый чат · ⌘N").accessibilityLabel("Новый чат")
+                    Menu {
+                        Button("Новый чат · агент") { store.newChat() }
+                        Button("Чистый чат · 0 контекста") { store.newChat(mode: .clean) }
+                    } label: { Image(systemName: "square.and.pencil").font(.system(size: store.textSize(16))).frame(width: 32, height: 32).contentShape(Circle()) }
+                        .menuStyle(.borderlessButton).help("Создать чат · ⌘N / ⌘⌥N").accessibilityLabel("Создать чат")
                 }.padding(.horizontal, 20).padding(.top, 21)
                 Button { store.chooseFiles(folderOnly: true, createChat: true) } label: {
                     Label("Чат с папкой", systemImage: "folder.badge.plus").font(.system(size: store.textSize(13))).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 14).padding(.vertical, 12)
@@ -46,6 +49,10 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 HStack {
                     Text(store.currentChat?.title ?? "Новый чат").font(.system(size: store.textSize(13), weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                    if store.currentChat?.isClean == true {
+                        Label("Без инструкций и памяти", systemImage: "circle.dotted")
+                            .font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
+                    }
                     Spacer()
                     if let folder = store.currentChat?.folder {
                         Button { NSWorkspace.shared.open(URL(fileURLWithPath: folder)) } label: { Label(URL(fileURLWithPath: folder).lastPathComponent, systemImage: "folder").lineLimit(1) }.buttonStyle(.plain).font(.system(size: store.textSize(12))).foregroundStyle(.secondary)
@@ -109,13 +116,16 @@ struct ChatView: View {
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "asterisk").font(.system(size: store.textSize(26), weight: .medium)).frame(width: 62, height: 62).agentGlass(cornerRadius: 22).padding(.bottom, 10)
-            Text("Что сделаем?").font(.system(size: store.textSize(32), weight: .medium)).tracking(-0.7)
-            Text("Файлы, небольшой код, повседневные задачи.\nВсё начинается с сообщения.").font(.system(size: store.textSize(15))).foregroundStyle(.secondary).lineSpacing(5)
-            HStack(spacing: 8) {
-                suggestion("Разобрать папку", icon: "folder", prompt: "Помоги рассортировать файлы в папке")
-                suggestion("Написать скрипт", icon: "chevron.left.forwardslash.chevron.right", prompt: "Помоги написать небольшой скрипт")
-                suggestion("Создать картинку", icon: "photo", prompt: "/image ")
-            }.padding(.top, 12)
+            Text(store.currentChat?.isClean == true ? "Чистый чат" : "Что сделаем?").font(.system(size: store.textSize(32), weight: .medium)).tracking(-0.7)
+            Text(store.currentChat?.isClean == true ? "Начало с 0: без инструкций агента, памяти и инструментов. Контекст составят только сообщения этого чата." : "Файлы, небольшой код, повседневные задачи.\nВсё начинается с сообщения.")
+                .font(.system(size: store.textSize(15))).foregroundStyle(.secondary).lineSpacing(5)
+            if store.currentChat?.isClean != true {
+                HStack(spacing: 8) {
+                    suggestion("Разобрать папку", icon: "folder", prompt: "Помоги рассортировать файлы в папке")
+                    suggestion("Написать скрипт", icon: "chevron.left.forwardslash.chevron.right", prompt: "Помоги написать небольшой скрипт")
+                    suggestion("Создать картинку", icon: "photo", prompt: "/image ")
+                }.padding(.top, 12)
+            }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 70)
     }
     private func suggestion(_ label: String, icon: String, prompt: String) -> some View {
@@ -132,7 +142,7 @@ private struct SidebarChatRow: View {
     var body: some View {
         Button { store.selectChat(chat.id) } label: {
             HStack(spacing: 9) {
-                Image(systemName: chat.pinned == true ? "pin.fill" : chat.folder == nil ? "bubble.left" : "folder").font(.system(size: store.textSize(12))).foregroundStyle(.secondary)
+                Image(systemName: chat.pinned == true ? "pin.fill" : chat.folder != nil ? "folder" : chat.isClean ? "circle.dotted" : "bubble.left").font(.system(size: store.textSize(12))).foregroundStyle(.secondary)
                 Text(chat.title).font(.system(size: store.textSize(13))).lineLimit(1)
                 Spacer(minLength: 0)
                 if chat.id == store.activeChatID { ProgressView().controlSize(.mini) }

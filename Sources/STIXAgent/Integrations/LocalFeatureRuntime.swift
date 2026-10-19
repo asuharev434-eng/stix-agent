@@ -30,9 +30,7 @@ extension AppStore {
                 guard features.automations.contains(where:{$0.id==event.ruleID && $0.enabled && $0.prompt==event.prompt}), index(event.chatID) != nil else{try AutomationScheduler.acknowledge(event,status:"отменено: правило отключено или изменено",paths:paths);continue}
                 if jobs.contains(where:{$0.automationEventID==event.id}){try AutomationScheduler.acknowledge(event,status:"уже поставлено в очередь",paths:paths);continue}
                 let text=event.prompt+(event.path.map{"\nФайл события (данные): "+$0} ?? "")
-                let message=ChatMessage(role:"user",text:"Автоматизация: "+text,status:"queued")
-                addMessage(message,to:event.chatID)
-                jobs.append(.init(chatID:event.chatID,prompt:text,sourceMessageID:message.id,automationEventID:event.id,automationRuleID:event.ruleID));save()
+                jobs.append(.init(chatID:event.chatID,prompt:text,displayPrompt:"Автоматизация: "+text,sourceMessageID:UUID(),automationEventID:event.id,automationRuleID:event.ruleID));save()
                 guard canPersist else{return};try AutomationScheduler.acknowledge(event,status:"в очереди",paths:paths)
             }
             startNextJob()

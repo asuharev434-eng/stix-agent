@@ -45,11 +45,18 @@ enum ContextCompaction {
         let checkpoint = checkpoint.flatMap { $0.matches(history) ? $0 : nil }
         // A boundary is never inside an assistant's tool-call/result group.
         let boundaries = history.indices.filter { history[$0].role != "tool" }
-        guard boundaries.count > 4 else { return nil }
-        let cut = boundaries[boundaries.count - 4]
         let previous = checkpoint?.coveredCount ?? 0
-        guard cut >= previous + 2 else { return nil }
         let latestRequest = history.lastIndex { $0.role == "user" }
+        // Prefer the established four-message tail. For a short conversation,
+        // retain the entire latest user turn instead of disabling compaction.
+        // A single long tool loop can retain its final assistant/tool group and
+        // pin the user's request alongside the summary.
+        let regularCut = boundaries.count > 4 ? boundaries[boundaries.count - 4] : nil
+        let lastGroupCut = boundaries.count > 1 ? boundaries[boundaries.count - 2] : nil
+        let cut = [regularCut, latestRequest, lastGroupCut]
+            .compactMap { $0 }
+            .first { $0 >= previous + 2 }
+        guard let cut else { return nil }
         return .init(source: Array(history[previous..<cut]), coveredCount: cut,
                      sourceDigest: digest(Array(history.prefix(cut))),
                      pinnedRequest: latestRequest.flatMap { $0 < cut ? history[$0] : nil },

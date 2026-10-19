@@ -77,7 +77,7 @@ struct TaskQueueView: View {
     }
 
     private func beginEditing(_ job: AgentJob) {
-        editedPrompt = job.prompt
+        editedPrompt = job.displayPrompt ?? job.prompt
         editingJob = job
     }
 }
@@ -112,7 +112,7 @@ struct TaskProgressView: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: symbol).foregroundStyle(tint).frame(width: 18).padding(.top, 2)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(job.prompt.isEmpty ? "Задача с вложениями" : job.prompt)
+                    Text((job.displayPrompt ?? job.prompt).isEmpty ? "Задача с вложениями" : (job.displayPrompt ?? job.prompt))
                         .font(.system(size: store.textSize(12), weight: running ? .medium : .regular))
                         .lineLimit(running ? 2 : 1)
                     HStack(spacing: 7) {

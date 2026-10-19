@@ -47,6 +47,7 @@ struct STIXAgentApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Новый чат") { store.newChat() }.keyboardShortcut("n")
+                Button("Чистый чат · без памяти") { store.newChat(mode: .clean) }.keyboardShortcut("n", modifiers: [.command, .option])
                 Button("Новый чат с папкой…") { store.chooseFiles(folderOnly: true, createChat: true) }.keyboardShortcut("n", modifiers: [.command, .shift])
             }
             CommandMenu("Агент") {

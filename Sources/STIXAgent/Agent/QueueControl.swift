@@ -94,6 +94,7 @@ extension AppStore {
         let prompt = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!prompt.isEmpty || !jobs[i].attachments.isEmpty), prompt.count <= 64000, vault.redact(prompt) == prompt else { error = "Недопустимое сообщение; секреты вводятся отдельно"; return false }
         jobs[i].prompt = prompt
+        jobs[i].displayPrompt = prompt
         if let messageID = jobs[i].sourceMessageID { editMessage(messageID, chatID: jobs[i].chatID) { $0.text = prompt } }; save(); return true
     }
     func moveQueuedJob(_ id: UUID, offset: Int) {
@@ -104,8 +105,7 @@ extension AppStore {
     }
     func steerQueuedJob(_ id: UUID) {
         guard let job = jobs.first(where: { $0.id == id }), job.status == "queued", job.attachments.isEmpty else { error = "Для корректировки передайте текст без новых вложений"; return }
-        // The queued user message already exists: remove its duplicate only after steering succeeded.
-        if steerCurrentTask(job.prompt) {
+        if steerCurrentTask(job.displayPrompt ?? job.prompt) {
             updateJob(id, status: "cancelled")
             if let source = job.sourceMessageID, let i = index(job.chatID) { chats[i].messages.removeAll { $0.id == source } }; save()
         }
@@ -117,8 +117,7 @@ extension AppStore {
         if name == "queue_task" {
             let prompt = vault.redact(try args.requiredString("prompt"))
             guard prompt.count <= 16000, jobs.filter({ $0.chatID == chatID && $0.status == "queued" }).count < 20 else { throw AgentError.message("Слишком много задач или длинный запрос") }
-            let message = ChatMessage(role: "user", text: prompt, status: "queued")
-            addMessage(message, to: chatID); enqueue(prompt: prompt, attachments: [], chatID: chatID, sourceMessageID: message.id)
+            enqueue(prompt: prompt, attachments: [], chatID: chatID, sourceMessageID: UUID(), displayPrompt: prompt)
             return .init(text: "В очереди: \(jobs.last!.id)")
         }
         let raw = try args.requiredString("job_id"), action = try args.requiredString("action")
