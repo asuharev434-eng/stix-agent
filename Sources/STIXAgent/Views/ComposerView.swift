@@ -23,10 +23,11 @@ struct ComposerView: View {
     var modelName: String {
         if imageMode {
             let id = store.currentChat?.imageModel ?? "SDXL"
-            return store.preferences.imageProfiles.first(where: { "workflow:" + $0.id == id })?.name ?? id
+            return store.preferences.imageProfiles.first(where: { "workflow:" + $0.id == id })?.name
+                ?? (id.hasPrefix("builtin-image:") ? "Stable Diffusion 1.5 · встроенная" : id)
         }
         let id = store.currentChat?.model ?? ""
-        return id.isEmpty ? "Выбрать модель" : id.split(separator: "/").last.map(String.init) ?? id
+        return id.isEmpty ? "Выбрать модель" : store.models.first(where: { $0.id == id })?.name ?? id
     }
     var body: some View {
         composer
@@ -143,17 +144,17 @@ struct ComposerView: View {
                     store.chats[index].imagePromptModel = nil; store.save()
                 }
                 ForEach(store.models) { model in
-                    Button(model.id) {
+                    Button(model.name) {
                         guard let id = store.selectedID, let index = store.index(id) else { return }
                         store.chats[index].imagePromptModel = model.id; store.save()
                     }
                 }
-                if store.models.isEmpty { Text("Запустите локальный API LM Studio") }
+                if store.models.isEmpty { Text("Модели не найдены") }
             } label: {
                 let selected = store.currentChat?.imagePromptModel ?? store.currentChat?.model ?? ""
                 HStack(spacing: 6) {
                     Image(systemName: "text.bubble")
-                    Text(selected.isEmpty ? "Выбрать модель" : selected.split(separator: "/").last.map(String.init) ?? selected).lineLimit(1)
+                    Text(selected.isEmpty ? "Выбрать модель" : store.models.first(where: { $0.id == selected })?.name ?? selected).lineLimit(1)
                     Image(systemName: "chevron.down").font(.system(size: store.textSize(8), weight: .semibold))
                 }.font(.system(size: store.textSize(12), weight: .medium))
             }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
@@ -202,11 +203,20 @@ struct ComposerView: View {
                 Menu {
                     if imageMode {
                         ForEach(store.preferences.imageProfiles) { profile in Button(profile.name) { store.setModel("workflow:" + profile.id, image: true) } }
-                        ForEach(store.checkpoints, id: \.self) { name in Button(name) { store.setModel(name, image: true) } }
-                        if store.checkpoints.isEmpty { Text("ComfyUI недоступен") }
+                        ForEach(store.checkpoints, id: \.self) { name in Button(name.hasPrefix("builtin-image:") ? "Stable Diffusion 1.5 · встроенная" : name) { store.setModel(name, image: true) } }
+                        if store.checkpoints.isEmpty { Text("Модели изображений не найдены") }
                     } else {
-                        ForEach(store.models) { model in Button(model.id) { store.setModel(model.id, image: false) } }
-                        if store.models.isEmpty { Text("Запустите локальный API LM Studio") }
+                        ForEach(store.models) { model in Button(model.name) { store.setModel(model.id, image: false) } }
+                        if store.models.isEmpty { Text("Модели не найдены") }
+                        Divider()
+                        Button("Добавить модель GGUF…") { store.importTextModel() }
+                        if !store.importedModels.isEmpty {
+                            Menu("Удалить импортированную модель") {
+                                ForEach(store.importedModels) { record in
+                                    Button(record.name, role: .destructive) { store.removeImportedTextModel(record) }
+                                }
+                            }
+                        }
                     }
                     Divider()
                     Button("Обновить модели") { Task { await store.refreshServices() } }

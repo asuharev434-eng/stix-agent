@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ApplicationServices
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -15,6 +16,7 @@ final class AppStore: ObservableObject {
     @Published var requestSnapshots: [UUID: ContextRequestSnapshot] = [:]
     @Published var projects: [MemoryProject] = []
     @Published var models: [ModelDescriptor] = []
+    @Published var importedModels: [ImportedGGUF] = []
     @Published var skills: [LocalSkill] = []
     @Published var focusedMessageID: UUID?
     @Published var checkpoints: [String] = []
@@ -37,6 +39,12 @@ final class AppStore: ObservableObject {
     let processRunner = ProcessRunner()
     lazy var computerTools = ComputerTools(captureDirectory: storage.paths.attachments)
     var plugins: [String: MCPClient] = [:]
+    lazy var builtInTextEngine = LocalModelLibrary.live(paths: storage.paths)
+    lazy var builtInImageEngine = CoreMLImageEngine.bundled()
+    var inferenceRegistry: InferenceRegistry {
+        InferenceRegistry(lmEndpoint: preferences.lmEndpoint, comfyEndpoint: preferences.comfyEndpoint,
+                          builtInText: builtInTextEngine, builtInImage: builtInImageEngine)
+    }
     var activeChatID: UUID?
     var task: Task<Void, Never>?
     var continuation: CheckedContinuation<InteractionAnswer, Never>?
@@ -103,6 +111,7 @@ final class AppStore: ObservableObject {
     func newChat(folder: URL? = nil, mode: ChatMode = .agent) {
         preserveDraft()
         var chat = Chat(folder: folder?.path, model: preferences.defaultModel, mode: mode)
+        if let imageModel = preferences.defaultImageModel { chat.imageModel = imageModel }
         chat.title = folder?.lastPathComponent ?? (mode == .clean ? "Чистый чат" : "Новый чат")
         chats.insert(chat, at: 0); selectedID = chat.id; draft = ""; attachments = []; save()
     }
@@ -152,23 +161,87 @@ final class AppStore: ObservableObject {
         guard panel.runModal() == .OK else { return }
         if createChat, let url = panel.url { newChat(folder: url) } else { addFiles(panel.urls) }
     }
+    func importTextModel() {
+        let panel = NSOpenPanel()
+        if let type = UTType(filenameExtension: "gguf") { panel.allowedContentTypes = [type] }
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Добавить модель"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                let record = try await builtInTextEngine.importFile(url)
+                await refreshServices()
+                setModel("builtin-text:" + record.id, image: false)
+                if let chatID = selectedID {
+                    addMessage(.init(role: "assistant", text: "Добавлена локальная модель \(record.name). Она скопирована в хранилище приложения и выбрана для этого чата."), to: chatID)
+                }
+            } catch { self.error = "Импорт модели: \(error.localizedDescription)" }
+        }
+    }
+    func removeImportedTextModel(_ record: ImportedGGUF) {
+        let storedID = "builtin-text:" + record.id
+        guard preferences.defaultModel != storedID,
+              !chats.contains(where: { $0.model == storedID || $0.imagePromptModel == storedID }),
+              !(preferences.modelRoles?.values.contains(storedID) ?? false) else {
+            error = "Сначала переключите чаты и назначения с этой модели, затем удалите её копию."; return
+        }
+        Task {
+            do { try await builtInTextEngine.remove(record.id); await refreshServices() }
+            catch { self.error = "Удаление модели: \(error.localizedDescription)" }
+        }
+    }
     func refreshServices() async {
-        async let modelResult: Result<[ModelDescriptor], Error> = capture { try await LMStudioClient(endpoint: self.preferences.lmEndpoint).models() }
-        async let imageResult: Result<[String], Error> = capture { try await ComfyClient(endpoint: self.preferences.comfyEndpoint).checkpoints() }
+        let builtInModels: [ModelDescriptor]
+        do { builtInModels = try await builtInTextEngine.models() }
+        catch { self.error = error.localizedDescription; builtInModels = [] }
+        importedModels = (try? await builtInTextEngine.importedModels()) ?? []
+        let builtInImages: [ModelDescriptor]
+        do { builtInImages = try await builtInImageEngine?.models() ?? [] }
+        catch { self.error = error.localizedDescription; builtInImages = [] }
+        async let modelResult: Result<[ModelDescriptor], Error> = capture { try await self.inferenceRegistry.externalText.models() }
+        async let imageResult: Result<[String], Error> = capture { try await self.inferenceRegistry.externalImage.models().map(\.id) }
         let (m, c) = await (modelResult, imageResult)
         if case .success(let list) = m {
-            models = list
-            if preferences.defaultModel.isEmpty, let model = list.first { preferences.defaultModel = model.id; if let id = selectedID, let i = index(id) { chats[i].model = model.id } }
+            models = builtInModels + list
         }
-        if case .success(let list) = c { checkpoints = list }
+        else { models = builtInModels }
+        if preferences.defaultModel.isEmpty, let model = models.first {
+            preferences.defaultModel = model.id
+            if let id = selectedID, let i = index(id), chats[i].model.isEmpty { chats[i].model = model.id }
+        }
+        checkpoints = builtInImages.map(\.id) + ((try? c.get()) ?? [])
         save()
     }
     func boot() async {
         guard !booting else { return }
         booting = true; defer { booting = false }
         let initialLM = preferences.lmEndpoint, initialComfy = preferences.comfyEndpoint
-        async let comfyResult: Result<Bool, Error> = capture { try await LocalServices.ensureComfyServer(endpoint: initialComfy, paths: storage.paths) }
-        let modelEndpoint = await LocalServices.ensureModelServer(preferred: initialLM)
+        let builtInModels: [ModelDescriptor]
+        do { builtInModels = try await builtInTextEngine.models() }
+        catch { self.error = "Встроенная модель: \(error.localizedDescription)"; builtInModels = [] }
+        importedModels = (try? await builtInTextEngine.importedModels()) ?? []
+        models = builtInModels
+        let builtInImages: [ModelDescriptor]
+        do { builtInImages = try await builtInImageEngine?.models() ?? [] }
+        catch { self.error = "Встроенная модель изображений: \(error.localizedDescription)"; builtInImages = [] }
+        checkpoints = builtInImages.map(\.id)
+        if preferences.defaultImageModel == nil, let first = builtInImages.first {
+            preferences.defaultImageModel = first.id
+            if let id = selectedID, let i = index(id), chats[i].messages.isEmpty,
+               chats[i].imageModel == "sd_xl_base_1.0.safetensors" { chats[i].imageModel = first.id }
+        }
+        if preferences.defaultModel.isEmpty, let first = builtInModels.first { preferences.defaultModel = first.id }
+        if let id = selectedID, let i = index(id), chats[i].model.isEmpty { chats[i].model = preferences.defaultModel }
+        let selectedText = currentChat?.model ?? preferences.defaultModel
+        let selectedPrompt = currentChat?.imagePromptModel ?? selectedText
+        let requiresExternalText = builtInModels.isEmpty || [selectedText, selectedPrompt].contains(where: { !$0.isEmpty && !$0.hasPrefix("builtin-text:") })
+        let selectedImage = currentChat?.imageModel ?? preferences.defaultImageModel ?? ""
+        let requiresComfy = builtInImages.isEmpty || (!selectedImage.isEmpty && !selectedImage.hasPrefix("builtin-image:"))
+        async let comfyResult: Result<Bool, Error> = capture {
+            requiresComfy ? try await LocalServices.ensureComfyServer(endpoint: initialComfy, paths: storage.paths) : true
+        }
+        let modelEndpoint = requiresExternalText ? await LocalServices.ensureModelServer(preferred: initialLM) : nil
         if let modelEndpoint {
             var chosenEndpoint = modelEndpoint
             var available = (try? await LMStudioClient(endpoint: modelEndpoint).models()) ?? []
@@ -180,7 +253,7 @@ final class AppStore: ObservableObject {
                 }
             }
             if preferences.lmEndpoint == initialLM { preferences.lmEndpoint = chosenEndpoint }
-            models = available
+            models = builtInModels + available
             if !available.isEmpty {
                 let list = available
                 if preferences.defaultModel.isEmpty {
@@ -190,13 +263,13 @@ final class AppStore: ObservableObject {
                 if let id = selectedID, let i = index(id), chats[i].model.isEmpty { chats[i].model = preferences.defaultModel }
             }
             save()
-        } else { error = "Локальный API LM Studio / Bionic не запустился. Проверьте Local Server и адрес в /diagnostics." }
+        } else if requiresExternalText { error = "Выбранная модель LM Studio / Bionic недоступна. Встроенная модель остаётся в списке; проверьте /models или /diagnostics." }
         switch await comfyResult {
         case .success(true):
-            if let list = try? await ComfyClient(endpoint: initialComfy).checkpoints() { checkpoints = list }
+            if requiresComfy, let list = try? await inferenceRegistry.externalImage.models() { checkpoints += list.map(\.id) }
         case .success(false):
-            error = "Локальный API ComfyUI не запустился. Проверьте установку и адрес в /diagnostics."
-        case .failure(let failure): error = "ComfyUI: \(failure.localizedDescription)"
+            if requiresComfy { error = "Локальный API ComfyUI не запустился. Проверьте установку и адрес в /diagnostics." }
+        case .failure(let failure): if requiresComfy { error = "ComfyUI: \(failure.localizedDescription)" }
         }
         for config in preferences.plugins where config.enabled {
             do { try await activatePlugin(config) }

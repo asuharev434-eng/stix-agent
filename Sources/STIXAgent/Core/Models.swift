@@ -46,7 +46,13 @@ struct ModelDescriptor: Identifiable, Codable, Hashable, Sendable {
     var kind: String? = nil
     var contextLimit: Int? = nil
     var contextLimitIsLoaded: Bool? = nil
-    var name: String { id.split(separator: "/").last.map(String.init) ?? id }
+    var displayName: String? = nil
+    var name: String {
+        if let displayName { return displayName }
+        if id == "builtin-text:qwen3-1.7b-q4_k_m" { return "Qwen3 1.7B · встроенная" }
+        if id.hasPrefix("builtin-image:") { return "Stable Diffusion 1.5 · встроенная" }
+        return id.split(separator: "/").last.map(String.init) ?? id
+    }
 }
 struct ToolCall: Codable, Equatable, Sendable, Identifiable {
     var id: String
@@ -138,6 +144,7 @@ struct AppPreferences: Codable {
     var lmEndpoint = "http://127.0.0.1:1234"
     var comfyEndpoint = "http://127.0.0.1:8188"
     var defaultModel = ""
+    var defaultImageModel: String? = nil
     var onboardingComplete = false
     var alwaysApprovals: Set<String> = []
     var connections: [APIConnection] = []
