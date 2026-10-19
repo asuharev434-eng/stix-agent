@@ -47,6 +47,7 @@ final class AppStore: ObservableObject {
     @Published var featureNotice: String?
     var featureMonitor: Task<Void,Never>?
     var featureMaintenanceBusy = false
+    var booting = false
     lazy var documentIndex = LocalDocumentIndex(paths: storage.paths)
     var canPersist = true
 
@@ -159,31 +160,41 @@ final class AppStore: ObservableObject {
         save()
     }
     func boot() async {
-        if !NSWorkspace.shared.runningApplications.contains(where: { ["Bionic", "LM Studio"].contains($0.localizedName ?? "") }) { LocalServices.openModelApp() }
-        await refreshServices()
-        if models.isEmpty {
-            for endpoint in LocalServices.lmCandidates() where endpoint != preferences.lmEndpoint {
-                if let list = try? await LMStudioClient(endpoint: endpoint).models(), !list.isEmpty {
-                    preferences.lmEndpoint = endpoint; models = list
-                    let preferred = list.first(where: { $0.id.lowercased().contains("qwen3.5-9b") }) ?? list.first(where: { $0.id.lowercased().contains("qwen3-coder") }) ?? list.first(where: { !$0.id.contains("embedding") }) ?? list[0]
-                    if preferences.defaultModel.isEmpty { preferences.defaultModel = preferred.id }
-                    if let id = selectedID, let i = index(id), chats[i].model.isEmpty { chats[i].model = preferences.defaultModel }
-                    save(); break
-                }
-            }
-        }
-        if checkpoints.isEmpty && preferences.comfyEndpoint == "http://127.0.0.1:8188" {
-            do {
-                if try LocalServices.startInstalledComfy(paths: storage.paths) {
-                    for _ in 0..<30 {
-                        try Task.checkCancellation()
-                        if let list = try? await ComfyClient(endpoint: preferences.comfyEndpoint).checkpoints(), !list.isEmpty { checkpoints = list; break }
-                        try await Task.sleep(nanoseconds: 1_000_000_000)
+        guard !booting else { return }
+        booting = true; defer { booting = false }
+        startFeatureMonitor()
+        let initialLM = preferences.lmEndpoint, initialComfy = preferences.comfyEndpoint
+        async let comfyResult: Result<Bool, Error> = capture { try await LocalServices.ensureComfyServer(endpoint: initialComfy, paths: storage.paths) }
+        let modelEndpoint = await LocalServices.ensureModelServer(preferred: initialLM)
+        if let modelEndpoint {
+            var chosenEndpoint = modelEndpoint
+            var available = (try? await LMStudioClient(endpoint: modelEndpoint).models()) ?? []
+            if available.isEmpty {
+                for candidate in LocalServices.lmCandidates() where candidate != modelEndpoint {
+                    if let other = try? await LMStudioClient(endpoint: candidate).models(), !other.isEmpty {
+                        chosenEndpoint = candidate; available = other; break
                     }
                 }
-            } catch { self.error = "ComfyUI: \(error.localizedDescription)" }
+            }
+            if preferences.lmEndpoint == initialLM { preferences.lmEndpoint = chosenEndpoint }
+            models = available
+            if !available.isEmpty {
+                let list = available
+                if preferences.defaultModel.isEmpty {
+                    let preferred = list.first(where: { $0.id.lowercased().contains("qwen3.5-9b") }) ?? list.first(where: { $0.id.lowercased().contains("qwen3-coder") }) ?? list.first(where: { !$0.id.contains("embedding") })
+                    if let preferred { preferences.defaultModel = preferred.id }
+                }
+                if let id = selectedID, let i = index(id), chats[i].model.isEmpty { chats[i].model = preferences.defaultModel }
+            }
+            save()
+        } else { error = "Локальный API LM Studio / Bionic не запустился. Проверьте Local Server и адрес в /diagnostics." }
+        switch await comfyResult {
+        case .success(true):
+            if let list = try? await ComfyClient(endpoint: initialComfy).checkpoints() { checkpoints = list }
+        case .success(false):
+            error = "Локальный API ComfyUI не запустился. Проверьте установку и адрес в /diagnostics."
+        case .failure(let failure): error = "ComfyUI: \(failure.localizedDescription)"
         }
-        startFeatureMonitor()
         for config in preferences.plugins where config.enabled {
             do { try await activatePlugin(config) }
             catch { self.error = "Плагин \(config.name): \(vault.redact(error.localizedDescription))" }

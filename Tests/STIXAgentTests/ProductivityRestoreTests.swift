@@ -62,7 +62,7 @@ final class ProductivityRestoreTests:XCTestCase {
         XCTAssertEqual(image.width,100);XCTAssertEqual(image.height,50)
         XCTAssertEqual(try Data(contentsOf:original),originalData)
         let undo=try XCTUnwrap(store.undos.values.first)
-        try FileTools(paths:store.storage.paths).undo(undo)
+        _ = try FileTools(paths:store.storage.paths).undo(undo)
         XCTAssertFalse(FileManager.default.fileExists(atPath:result.path));XCTAssertEqual(try Data(contentsOf:original),originalData)
     }
 }
