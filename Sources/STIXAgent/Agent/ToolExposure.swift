@@ -20,6 +20,12 @@ enum ToolExposure {
         let words = lower.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
         guard !words.isEmpty else { return [] }
         let aliases: [(String, [String])] = [
+            ("файл", ["list_files", "read_file", "write_file", "move_file", "trash_file"]),
+            ("папк", ["list_files", "search_files", "move_file"]),
+            ("код", ["read_file", "write_file", "verify_result", "run_shell"]),
+            ("скрипт", ["read_file", "write_file", "verify_result", "run_shell"]),
+            ("терминал", ["run_shell"]),
+            ("команд", ["run_shell"]),
             ("картин", ["generate_image", "import_image_workflow", "show_file"]),
             ("изображ", ["generate_image", "import_image_workflow", "show_file"]),
             ("фото", ["generate_image", "show_file"]),
@@ -45,6 +51,23 @@ enum ToolExposure {
             }
         }
         return found.prefix(12).map { $0 }
+    }
+
+    /// Small local models receive only tools relevant to the current request.
+    /// A simple question has no tool schema, which prevents invented calls and
+    /// leaves room for the answer in the model's context window.
+    static func selectedForBuiltIn(from all: [ToolDefinition], currentRequest: String,
+                                   exposed: Set<String> = []) -> [ToolDefinition] {
+        let lower = currentRequest.lowercased()
+        let actionRoots = ["созд", "запиш", "прочит", "покаж", "удал", "перемест", "сортир",
+                           "исправ", "запуст", "выполн", "открой", "найд", "проверь",
+                           "измен", "редактир", "подключ", "настрой", "сделай", "обработ"]
+        let needed = matches(query: currentRequest, tools: all.filter { $0.name != "discover_tools" })
+        guard !needed.isEmpty || actionRoots.contains(where: { lower.contains($0) }) || !exposed.isEmpty else { return [] }
+        let byName = Dictionary(uniqueKeysWithValues: all.map { ($0.name, $0) })
+        let selected = ["discover_tools"] + exposed.sorted() + needed.map(\.name)
+        var seen = Set<String>()
+        return selected.compactMap { seen.insert($0).inserted ? byName[$0] : nil }.prefix(7).map { $0 }
     }
 
     static func selected(from all: [ToolDefinition], limit: Int?, system: String,

@@ -56,16 +56,22 @@ final class CoreMLImageEngineTests: XCTestCase {
         context.setFillColor(CGColor(gray: 0, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 512, height: 512))
         context.setFillColor(CGColor(gray: 1, alpha: 1))
-        context.fill(CGRect(x: 128, y: 128, width: 256, height: 256))
+        context.beginPath()
+        context.move(to: CGPoint(x: 250, y: 300))
+        context.addLine(to: CGPoint(x: 410, y: 300))
+        context.addLine(to: CGPoint(x: 390, y: 85))
+        context.addLine(to: CGPoint(x: 275, y: 85))
+        context.closePath()
+        context.fillPath()
         let mask = try XCTUnwrap(context.makeImage())
         let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(maskURL as CFURL, UTType.png.identifier as CFString, 1, nil))
         CGImageDestinationAddImage(destination, mask, nil)
         XCTAssertTrue(CGImageDestinationFinalize(destination))
 
-        request.prompt = "Make the cup blue while preserving the table"
+        request.prompt = "A blue ceramic cup on a wooden table, soft daylight"
         request.inputImagePath = created[0].path
         request.maskImagePath = maskURL.path
-        request.denoise = 0.7
+        request.denoise = 0.85
         let edited = try await engine.generate(request: request, model: CoreMLImageEngine.modelID,
                                                outputDirectory: folder, workflow: nil,
                                                onStepProgress: { _, _ in }, onProgress: { _ in })
@@ -77,5 +83,28 @@ final class CoreMLImageEngineTests: XCTestCase {
             try FileManager.default.copyItem(at: created[0], to: directory.appendingPathComponent("generated.png"))
             try FileManager.default.copyItem(at: edited[0], to: directory.appendingPathComponent("edited.png"))
         }
+    }
+
+    func testCancellationDoesNotLeavePartialImage() async throws {
+        guard let resources = ProcessInfo.processInfo.environment["STIX_TEST_COREML_RESOURCES"] else {
+            throw XCTSkip("Set STIX_TEST_COREML_RESOURCES for cancellation")
+        }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("stix-coreml-cancel-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let engine = CoreMLImageEngine(resources: URL(fileURLWithPath: resources))
+        var request = ImageRequest(prompt: "A blue ceramic cup on a wooden table")
+        request.width = 512; request.height = 512; request.steps = 20
+        let task = Task {
+            try await engine.generate(request: request, model: CoreMLImageEngine.modelID,
+                                      outputDirectory: folder, workflow: nil,
+                                      onStepProgress: { _, _ in }, onProgress: { _ in })
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        task.cancel()
+        do { _ = try await task.value; XCTFail("Cancelled generation finished as successful") }
+        catch { }
+        let images = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        XCTAssertFalse(images.contains { $0.pathExtension == "png" })
     }
 }

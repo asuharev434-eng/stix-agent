@@ -19,6 +19,10 @@ extension AppStore {
     }
     func toolsForRequest(chatID: UUID, system: String, currentRequest: String) -> [ToolDefinition] {
         guard let i = index(chatID), !chats[i].isClean else { return [] }
+        if chats[i].model.hasPrefix("builtin-text:") {
+            return ToolExposure.selectedForBuiltIn(from: allTools(), currentRequest: currentRequest,
+                                                   exposed: exposedToolNames)
+        }
         return ToolExposure.selected(from: allTools(), limit: contextLimit(for: chats[i]), system: system, currentRequest: currentRequest, exposed: exposedToolNames)
     }
     func modelMessages(chatID: UUID, system: String, history: [LMMessage]) -> [LMMessage] {

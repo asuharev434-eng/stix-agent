@@ -150,12 +150,19 @@ actor LocalModelLibrary: TextInferenceEngine {
         guard source.isFileURL, source.pathExtension.lowercased() == "gguf" else {
             throw AgentError.message("Выберите локальный файл .gguf")
         }
-        let size = (try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber)?.int64Value ?? 0
+        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw AgentError.message("Выберите обычный файл модели, а не ссылку")
+        }
+        let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         let limit = min(Int64(ProcessInfo.processInfo.physicalMemory * 3 / 5), 16 * 1024 * 1024 * 1024)
         guard size > 0, size <= limit else { throw AgentError.message("Размер модели превышает безопасный бюджет памяти этого Mac") }
         let temporary = directory.appendingPathComponent(".import-" + UUID().uuidString + ".gguf")
         defer { try? FileManager.default.removeItem(at: temporary) }
         try FileManager.default.copyItem(at: source, to: temporary)
+        guard (try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.int64Value == size else {
+            throw AgentError.message("Файл изменился во время импорта")
+        }
         let info = try GGUFInspector.inspect(temporary)
         let file = try FileHandle(forReadingFrom: temporary)
         defer { try? file.close() }

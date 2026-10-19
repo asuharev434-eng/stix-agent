@@ -76,7 +76,7 @@ extension AppStore {
             let text = preferences.connections.isEmpty ? "Подключений пока нет. Напишите: «Подключи API» с названием и адресом. Для ключа появится защищённая форма." : preferences.connections.map { "**\($0.name)** · \($0.baseURL)\nДокументация: `\($0.documentationPath)`" }.joined(separator: "\n\n")
             addMessage(.init(role: "assistant", text: text), to: chatID); return true
         case "/help":
-            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/image описание` — генерация через ComfyUI\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/doctor` — сервисы, права, модели и диск\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/pause` — приостановить\n`/skip` — пропустить следующий шаг\n`/compact` — сжать контекст и сохранить переписку\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
+            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/image описание` — генерация выбранной локальной моделью\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/doctor` — сервисы, права, модели и диск\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/pause` — приостановить\n`/skip` — пропустить следующий шаг\n`/compact` — сжать контекст и сохранить переписку\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
         default: return false
         }
     }
@@ -104,6 +104,7 @@ extension AppStore {
         Роли специалистов: \(specialistAssignments().sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "; "))
         Подключения API:\n\(connections.isEmpty ? "нет" : connections)
         Плагины:\n\(pluginList.isEmpty ? "нет" : pluginList)
+        \(chats.first(where: { $0.id == chatID })?.model.hasPrefix("builtin-text:") == true ? "Для вопроса без действий отвечай обычным текстом без JSON. Вызывай только инструменты, схемы которых переданы вместе с текущим запросом." : "")
         """
     }
     func runAgent(text: String, attachments: [Attachment], chatID: UUID, sourceMessageID: UUID? = nil) async throws {

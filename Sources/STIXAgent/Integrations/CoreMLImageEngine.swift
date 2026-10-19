@@ -112,7 +112,9 @@ actor CoreMLImageEngine: ImageInferenceEngine {
                 options.stepCount = request.steps
                 options.seed = UInt32(request.seed)
                 options.guidanceScale = Float(request.cfg)
-                options.startingImage = input
+                options.startingImage = try input.map { original in
+                    try mask.map { try Self.desaturateMaskedRegion(original: original, mask: $0) } ?? original
+                }
                 options.strength = Float(request.denoise)
                 let generated = try pipeline.generateImages(configuration: options) { progress in
                     state.step(progress.step + 1, total: progress.stepCount)
@@ -155,8 +157,11 @@ actor CoreMLImageEngine: ImageInferenceEngine {
         guard !validated else { return }
         let manifestURL = resources.appendingPathComponent("manifest.json")
         let manifest = try JSONDecoder().decode(CoreMLAssetManifest.self, from: Data(contentsOf: manifestURL))
-        guard manifest.repository == "apple/coreml-stable-diffusion-v1-5-palettized",
-              manifest.revision == "04a6a0bdd66fb8da470c14e56d762343ef579d88",
+        let approvedSources = [
+            "apple/coreml-stable-diffusion-v1-5-palettized": "04a6a0bdd66fb8da470c14e56d762343ef579d88",
+            "apple/coreml-stable-diffusion-v1-5": "c63580e549bc0ca6c27381d0640c1eb1b68b00b1"
+        ]
+        guard approvedSources[manifest.repository] == manifest.revision,
               manifest.files.count >= 20,
               ["TextEncoder.mlmodelc/weights/weight.bin", "Unet.mlmodelc/weights/weight.bin",
                "VAEDecoder.mlmodelc/weights/weight.bin", "VAEEncoder.mlmodelc/weights/weight.bin",
@@ -217,6 +222,25 @@ actor CoreMLImageEngine: ImageInferenceEngine {
         guard let output = filter.outputImage,
               let image = CIContext(options: [.useSoftwareRenderer: false]).createCGImage(output, from: output.extent) else {
             throw AgentError.message("Не удалось применить маску к изображению")
+        }
+        return image
+    }
+
+    private static func desaturateMaskedRegion(original: CGImage, mask: CGImage) throws -> CGImage {
+        let extent = CGRect(x: 0, y: 0, width: original.width, height: original.height)
+        guard let color = CIFilter(name: "CIColorControls"),
+              let blend = CIFilter(name: "CIBlendWithMask") else {
+            throw AgentError.message("Системные фильтры подготовки маски недоступны")
+        }
+        color.setValue(CIImage(cgImage: original), forKey: kCIInputImageKey)
+        color.setValue(0, forKey: kCIInputSaturationKey)
+        guard let neutral = color.outputImage else { throw AgentError.message("Не удалось подготовить область правки") }
+        blend.setValue(neutral, forKey: kCIInputImageKey)
+        blend.setValue(CIImage(cgImage: original), forKey: kCIInputBackgroundImageKey)
+        blend.setValue(CIImage(cgImage: mask), forKey: kCIInputMaskImageKey)
+        guard let output = blend.outputImage,
+              let image = CIContext(options: [.useSoftwareRenderer: false]).createCGImage(output, from: extent) else {
+            throw AgentError.message("Не удалось подготовить маску для Core ML")
         }
         return image
     }

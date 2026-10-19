@@ -23,4 +23,25 @@ final class LlamaNativeTests: XCTestCase {
         XCTAssertTrue(reply.toolCalls.isEmpty)
         await engine.release()
     }
+
+    func testImagePromptPreparationWithoutServer() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let modelPath = environment["STIX_TEST_GGUF"],
+              let bridgePath = environment["STIX_TEST_LLAMA_BRIDGE"],
+              let hash = environment["STIX_TEST_GGUF_SHA256"] else {
+            throw XCTSkip("Set native model and SHA-256 to test image prompt preparation")
+        }
+        let engine = LlamaTextEngine(modelID: "image-prompt-test", modelURL: URL(fileURLWithPath: modelPath),
+                                     expectedSHA256: hash, libraryURL: URL(fileURLWithPath: bridgePath), contextLength: 4096)
+        let request = ImageRequest(prompt: "Нарисуй красную чашку на деревянном столе")
+        let messages = ImagePromptAdapter.messages(request: request, imageModel: "builtin-image:sd15-palettized-512",
+                                                   workflow: nil, language: "auto")
+        let reply = try await engine.complete(model: "image-prompt-test", messages: messages,
+                                              tools: [], maxOutputTokens: 256, preserveContext: false,
+                                              thinking: false, onPhase: { _ in }, onRequest: { _ in },
+                                              onReasoning: { _ in }, onText: { _ in })
+        let adapted = try ImagePromptAdapter.parse(reply.content)
+        XCTAssertFalse(adapted.prompt.isEmpty)
+        await engine.release()
+    }
 }
