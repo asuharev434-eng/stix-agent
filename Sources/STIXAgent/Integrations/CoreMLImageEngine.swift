@@ -102,7 +102,7 @@ actor CoreMLImageEngine: ImageInferenceEngine {
                 let configuration = MLModelConfiguration()
                 configuration.computeUnits = .cpuAndGPU
                 let pipeline = try StableDiffusionPipeline(resourcesAt: resources, controlNet: [],
-                                                           configuration: configuration, disableSafety: true,
+                                                           configuration: configuration, disableSafety: false,
                                                            reduceMemory: true)
                 try pipeline.loadResources()
                 defer { pipeline.unloadResources() }
@@ -162,9 +162,10 @@ actor CoreMLImageEngine: ImageInferenceEngine {
             "apple/coreml-stable-diffusion-v1-5": "c63580e549bc0ca6c27381d0640c1eb1b68b00b1"
         ]
         guard approvedSources[manifest.repository] == manifest.revision,
-              manifest.files.count >= 20,
+              manifest.files.count >= 25,
               ["TextEncoder.mlmodelc/weights/weight.bin", "Unet.mlmodelc/weights/weight.bin",
                "VAEDecoder.mlmodelc/weights/weight.bin", "VAEEncoder.mlmodelc/weights/weight.bin",
+               "SafetyChecker.mlmodelc/weights/weight.bin",
                "vocab.json", "merges.txt"].allSatisfy({ manifest.files[$0] != nil }) else {
             throw AgentError.message("Комплект встроенной модели изображений неполон")
         }

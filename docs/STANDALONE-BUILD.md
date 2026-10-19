@@ -1,8 +1,8 @@
 # Автономная сборка STIX Agent
 
-Этот вариант работает без запущенных LM Studio и ComfyUI. Встроенная Qwen3 1.7B обрабатывает текст и инструменты через llama.cpp/Metal; Core ML Stable Diffusion 1.5 создаёт и правит изображения. Существующие внешние модели остаются доступными как дополнительные провайдеры. Идентификаторы старых чатов не переписываются.
+Этот вариант работает без запущенных LM Studio и ComfyUI. Встроенная Qwen3 4B обрабатывает текст и инструменты через llama.cpp/Metal; Core ML Stable Diffusion 1.5 с SafetyChecker создаёт и правит изображения. Существующие внешние модели остаются доступными как дополнительные провайдеры. Идентификаторы старых чатов не переписываются.
 
-Точные ревизии, контрольные суммы, лицензии и результаты испытаний — в [матрице инференса](INFERENCE-MATRIX.md). Веса не хранятся в Git. На компьютере сборки разместите проверенный `Qwen3-1.7B-Q4_K_M.gguf` по пути `~/Library/Caches/STIXAgentBuild/Models/` и подготовьте Core ML комплект через:
+Точные ревизии, контрольные суммы, лицензии и результаты испытаний — в [матрице инференса](INFERENCE-MATRIX.md). Веса не хранятся в Git. На компьютере сборки разместите проверенный `Qwen3-4B-Q4_K_M.gguf` по пути `~/Library/Caches/STIXAgentBuild/Models/` и подготовьте Core ML комплект через:
 
 ```sh
 python3 scripts/stage-coreml-image.py --output "$HOME/Library/Caches/STIXAgentBuild/CoreML-SD15-Palettized"
@@ -16,8 +16,8 @@ STIX_BUNDLE_TEXT=1 STIX_BUNDLE_IMAGE=1 ./scripts/build-app.sh
 
 ```sh
 swift test
-STIX_TEST_GGUF="$HOME/Library/Caches/STIXAgentBuild/Models/Qwen3-1.7B-Q4_K_M.gguf" \
-STIX_TEST_GGUF_SHA256=d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5 \
+STIX_TEST_GGUF="$HOME/Library/Caches/STIXAgentBuild/Models/Qwen3-4B-Q4_K_M.gguf" \
+STIX_TEST_GGUF_SHA256=ab27b9bfa375a178d6cba48f3ad892b94b7739659dcc7aae8058ce0ffed6b328 \
 STIX_TEST_LLAMA_BRIDGE=dist/native/Frameworks/libSTIXLlama.dylib \
 swift test --filter LlamaNativeTests
 ```

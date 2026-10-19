@@ -51,6 +51,20 @@ final class InferenceRegistryTests: XCTestCase {
         XCTAssertTrue(LlamaTextEngine.parseToolReply(answer, allowed: ["write_file"]).toolCalls.isEmpty)
         XCTAssertTrue(LlamaTextEngine.parseToolReply("not JSON", allowed: ["list_files"]).toolCalls.isEmpty)
     }
+
+    func testSuccessiveJSONToolCallsAreExecutedInOrderOnlyWhenAllAreValid() {
+        let answer = """
+        {"tool_calls":[{"name":"write_file","arguments":{"path":"/tmp/test.txt","content":"Привет"}}]}
+
+        {"tool_calls":[{"name":"read_file","arguments":{"path":"/tmp/test.txt"}}]}
+        """
+        let parsed = LlamaTextEngine.parseToolReply(answer, allowed: ["write_file", "read_file"])
+        XCTAssertEqual(parsed.toolCalls.map(\.name), ["write_file", "read_file"])
+        XCTAssertTrue(parsed.content.isEmpty)
+        XCTAssertTrue(LlamaTextEngine.parseToolReply(answer, allowed: ["write_file"]).toolCalls.isEmpty)
+        XCTAssertTrue(LlamaTextEngine.parseToolReply(answer + "\nГотово", allowed: ["write_file", "read_file"]).toolCalls.isEmpty)
+        XCTAssertTrue(LlamaTextEngine.parseToolReply(answer + "\n{", allowed: ["write_file", "read_file"]).toolCalls.isEmpty)
+    }
 }
 
 private struct FakeTextEngine: TextInferenceEngine {

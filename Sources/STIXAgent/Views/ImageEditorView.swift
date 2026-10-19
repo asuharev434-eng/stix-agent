@@ -9,7 +9,7 @@ struct ImageEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selected: Attachment?
     @State private var prompt = ""
-    @State private var strength = 0.55
+    @State private var strength = 0.75
     @State private var brushSize = 0.06
     @State private var erasing = false
     @State private var strokes: [ImageMaskStroke] = []

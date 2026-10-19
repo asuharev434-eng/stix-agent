@@ -49,7 +49,7 @@ struct ModelDescriptor: Identifiable, Codable, Hashable, Sendable {
     var displayName: String? = nil
     var name: String {
         if let displayName { return displayName }
-        if id == "builtin-text:qwen3-1.7b-q4_k_m" { return "Qwen3 1.7B · встроенная" }
+        if id == "builtin-text:qwen3-4b-q4_k_m" { return "Qwen3 4B · встроенная" }
         if id.hasPrefix("builtin-image:") { return "Stable Diffusion 1.5 · встроенная" }
         return id.split(separator: "/").last.map(String.init) ?? id
     }
@@ -162,6 +162,67 @@ struct AppPreferences: Codable {
     var pluginEnvironment: [String: [String: String]]? = nil
     var disabledSkills: Set<String>? = nil
     var voiceLanguage: String? = nil
+}
+extension AppPreferences {
+    private enum CodingKeys: String, CodingKey {
+        case theme, lmEndpoint, comfyEndpoint, defaultModel, defaultImageModel,
+             onboardingComplete, alwaysApprovals, connections, plugins, maxToolRounds,
+             imageProfiles, secrets, webSearchEnabled, thinking, questionLevel,
+             fontSize, spacing, memory, modelRoles, pluginEnvironment, disabledSkills,
+             voiceLanguage
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        theme = try values.decodeIfPresent(String.self, forKey: .theme) ?? "system"
+        lmEndpoint = try values.decodeIfPresent(String.self, forKey: .lmEndpoint) ?? "http://127.0.0.1:1234"
+        comfyEndpoint = try values.decodeIfPresent(String.self, forKey: .comfyEndpoint) ?? "http://127.0.0.1:8188"
+        defaultModel = try values.decodeIfPresent(String.self, forKey: .defaultModel) ?? ""
+        defaultImageModel = try values.decodeIfPresent(String.self, forKey: .defaultImageModel)
+        onboardingComplete = try values.decodeIfPresent(Bool.self, forKey: .onboardingComplete) ?? false
+        alwaysApprovals = Set(try values.decodeIfPresent([String].self, forKey: .alwaysApprovals) ?? [])
+        connections = try values.decodeIfPresent([APIConnection].self, forKey: .connections) ?? []
+        plugins = try values.decodeIfPresent([PluginConfig].self, forKey: .plugins) ?? []
+        maxToolRounds = try values.decodeIfPresent(Int.self, forKey: .maxToolRounds) ?? 40
+        imageProfiles = try values.decodeIfPresent([ImageWorkflowProfile].self, forKey: .imageProfiles) ?? []
+        secrets = try values.decodeIfPresent([SecretReference].self, forKey: .secrets) ?? []
+        webSearchEnabled = try values.decodeIfPresent(Bool.self, forKey: .webSearchEnabled)
+        thinking = try values.decodeIfPresent(Bool.self, forKey: .thinking)
+        questionLevel = try values.decodeIfPresent(Int.self, forKey: .questionLevel)
+        fontSize = try values.decodeIfPresent(Double.self, forKey: .fontSize)
+        spacing = try values.decodeIfPresent(Double.self, forKey: .spacing)
+        memory = try values.decodeIfPresent([String].self, forKey: .memory)
+        modelRoles = try values.decodeIfPresent([String: String].self, forKey: .modelRoles)
+        pluginEnvironment = try values.decodeIfPresent([String: [String: String]].self, forKey: .pluginEnvironment)
+        disabledSkills = try values.decodeIfPresent([String].self, forKey: .disabledSkills).map(Set.init)
+        voiceLanguage = try values.decodeIfPresent(String.self, forKey: .voiceLanguage)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(theme, forKey: .theme)
+        try values.encode(lmEndpoint, forKey: .lmEndpoint)
+        try values.encode(comfyEndpoint, forKey: .comfyEndpoint)
+        try values.encode(defaultModel, forKey: .defaultModel)
+        try values.encodeIfPresent(defaultImageModel, forKey: .defaultImageModel)
+        try values.encode(onboardingComplete, forKey: .onboardingComplete)
+        try values.encode(alwaysApprovals.sorted(), forKey: .alwaysApprovals)
+        try values.encode(connections, forKey: .connections)
+        try values.encode(plugins, forKey: .plugins)
+        try values.encode(maxToolRounds, forKey: .maxToolRounds)
+        try values.encode(imageProfiles, forKey: .imageProfiles)
+        try values.encode(secrets, forKey: .secrets)
+        try values.encodeIfPresent(webSearchEnabled, forKey: .webSearchEnabled)
+        try values.encodeIfPresent(thinking, forKey: .thinking)
+        try values.encodeIfPresent(questionLevel, forKey: .questionLevel)
+        try values.encodeIfPresent(fontSize, forKey: .fontSize)
+        try values.encodeIfPresent(spacing, forKey: .spacing)
+        try values.encodeIfPresent(memory, forKey: .memory)
+        try values.encodeIfPresent(modelRoles, forKey: .modelRoles)
+        try values.encodeIfPresent(pluginEnvironment, forKey: .pluginEnvironment)
+        try values.encodeIfPresent(disabledSkills?.sorted(), forKey: .disabledSkills)
+        try values.encodeIfPresent(voiceLanguage, forKey: .voiceLanguage)
+    }
 }
 struct PersistedState: Codable {
     var version = 1

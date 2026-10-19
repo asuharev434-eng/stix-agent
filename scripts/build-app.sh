@@ -17,8 +17,8 @@ done
 if [[ "${STIX_BUNDLE_TEXT:-0}" == "1" ]]; then
     "$project_dir/scripts/build-llama.sh"
     staging_dir="${STIX_MODEL_STAGING:-$HOME/Library/Caches/STIXAgentBuild/Models}"
-    model_file="$staging_dir/Qwen3-1.7B-Q4_K_M.gguf"
-    expected_hash="d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5"
+    model_file="$staging_dir/Qwen3-4B-Q4_K_M.gguf"
+    expected_hash="ab27b9bfa375a178d6cba48f3ad892b94b7739659dcc7aae8058ce0ffed6b328"
     [[ -f "$model_file" ]] || { print -u2 "Missing verified built-in text model: $model_file"; exit 1; }
     actual_hash="$(/usr/bin/shasum -a 256 "$model_file" | /usr/bin/awk '{print $1}')"
     [[ "$actual_hash" == "$expected_hash" ]] || { print -u2 "Built-in text model SHA-256 mismatch"; exit 1; }

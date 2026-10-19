@@ -109,10 +109,10 @@ actor LlamaTextEngine: TextInferenceEngine {
     static func bundled() -> LlamaTextEngine? {
         guard let resourceURL = Bundle.main.resourceURL,
               let frameworkURL = Bundle.main.privateFrameworksURL else { return nil }
-        let modelURL = resourceURL.appendingPathComponent("Models/Qwen3-1.7B-Q4_K_M.gguf")
+        let modelURL = resourceURL.appendingPathComponent("Models/Qwen3-4B-Q4_K_M.gguf")
         guard FileManager.default.fileExists(atPath: modelURL.path) else { return nil }
-        return LlamaTextEngine(modelID: "qwen3-1.7b-q4_k_m", modelURL: modelURL,
-                               expectedSHA256: "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+        return LlamaTextEngine(modelID: "qwen3-4b-q4_k_m", modelURL: modelURL,
+                               expectedSHA256: "ab27b9bfa375a178d6cba48f3ad892b94b7739659dcc7aae8058ce0ffed6b328",
                                libraryURL: frameworkURL.appendingPathComponent("libSTIXLlama.dylib"))
     }
 
@@ -282,19 +282,58 @@ actor LlamaTextEngine: TextInferenceEngine {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 : trimmed
         } else { candidate = trimmed }
-        guard !allowed.isEmpty, let json = try? JSONValue.parse(candidate),
-              let calls = json["tool_calls"].array, !calls.isEmpty, calls.count <= 16 else {
+        guard !allowed.isEmpty, let objects = Self.toolObjects(in: candidate) else {
             return LMReply(content: trimmed, toolCalls: [])
         }
         var parsed: [ToolCall] = []
-        for call in calls {
-            guard let name = call["name"].string, allowed.contains(name),
-                  let arguments = call["arguments"].object else {
+        for object in objects {
+            guard let json = try? JSONValue.parse(object),
+                  let calls = json["tool_calls"].array, !calls.isEmpty,
+                  parsed.count + calls.count <= 16 else {
                 return LMReply(content: trimmed, toolCalls: [])
             }
-            let args = JSONValue.object(arguments).encoded
-            parsed.append(ToolCall(id: call["id"].string ?? "call_\(UUID().uuidString)", name: name, arguments: args))
+            for call in calls {
+                guard let name = call["name"].string, allowed.contains(name),
+                      let arguments = call["arguments"].object else {
+                    return LMReply(content: trimmed, toolCalls: [])
+                }
+                let args = JSONValue.object(arguments).encoded
+                parsed.append(ToolCall(id: call["id"].string ?? "call_\(UUID().uuidString)", name: name, arguments: args))
+            }
         }
         return LMReply(content: "", toolCalls: parsed)
+    }
+
+    /// Accept one or more complete JSON objects separated only by whitespace.
+    /// Small models sometimes emit successive tool-call objects in one turn;
+    /// prose or malformed trailing data must never become an executable call.
+    private static func toolObjects(in candidate: String) -> [String]? {
+        var objects: [String] = []
+        var current = ""
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for character in candidate {
+            if depth == 0 {
+                if character.isWhitespace { continue }
+                guard character == "{", objects.count < 16 else { return nil }
+                current = "{"; depth = 1
+                continue
+            }
+            current.append(character)
+            if inString {
+                if escaped { escaped = false }
+                else if character == "\\" { escaped = true }
+                else if character == "\"" { inString = false }
+            } else if character == "\"" {
+                inString = true
+            } else if character == "{" {
+                depth += 1
+            } else if character == "}" {
+                depth -= 1
+                if depth == 0 { objects.append(current); current = "" }
+            }
+        }
+        return depth == 0 && !inString && !objects.isEmpty ? objects : nil
     }
 }

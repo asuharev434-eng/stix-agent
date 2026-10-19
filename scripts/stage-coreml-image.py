@@ -22,7 +22,8 @@ VARIANTS = {
 }
 ROOT = "original/compiled/"
 COMPONENTS = ("TextEncoder.mlmodelc/", "Unet.mlmodelc/",
-              "VAEDecoder.mlmodelc/", "VAEEncoder.mlmodelc/")
+              "VAEDecoder.mlmodelc/", "VAEEncoder.mlmodelc/",
+              "SafetyChecker.mlmodelc/")
 TOKENIZER = ("vocab.json", "merges.txt")
 
 
@@ -81,7 +82,9 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     if args.verify_only:
         manifest = json.loads((args.output / "manifest.json").read_text(encoding="utf-8"))
-        if manifest["repository"] != repository or manifest["revision"] != revision or len(manifest["files"]) < 20:
+        if (manifest["repository"] != repository or manifest["revision"] != revision or
+                len(manifest["files"]) < 25 or
+                "SafetyChecker.mlmodelc/weights/weight.bin" not in manifest["files"]):
             raise RuntimeError("Wrong Core ML model manifest")
         for relative, values in manifest["files"].items():
             if relative.startswith("/") or ".." in Path(relative).parts:
@@ -93,7 +96,9 @@ def main() -> None:
         print(f"Verified: {args.output}")
         return
     items = metadata(repository, revision)
-    if len(items) < 20 or not any("VAEEncoder.mlmodelc/weights/" in x["rfilename"] for x in items):
+    if (len(items) < 25 or
+            not all(any(component + "weights/weight.bin" in x["rfilename"] for x in items)
+                    for component in COMPONENTS)):
         raise RuntimeError("Incomplete Core ML component list")
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         for result in pool.map(lambda item: stage(item, args.output, repository, revision), items):
