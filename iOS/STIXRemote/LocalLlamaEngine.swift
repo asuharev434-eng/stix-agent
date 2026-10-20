@@ -45,9 +45,9 @@ enum LocalLlamaEngine {
     private static func format(_ messages: [RemoteMessage], characterBudget: Int,
                                model: OpaquePointer, useBuiltInTemplate: Bool,
                                smallContext: Bool) -> String {
-        if smallContext && llama_model_chat_template(model, nil) == nil {
+        if smallContext {
             let latest = messages.last(where: { $0.role == "user" })?.text ?? ""
-            return "Вопрос: \(String(latest.suffix(min(characterBudget, 160))))\nОтвет:"
+            return "Вопрос: \(String(latest.suffix(min(characterBudget, 160))))\nОтвет: "
         }
         let instruction = "Ты STIX, локальный помощник на iPhone. Отвечай на языке пользователя, кратко и по делу. Ты не подключён к Mac и не можешь выполнять команды Mac. Не утверждай, что выполнил действие, если не сделал его. /no_think"
         var selected: [(role: String, text: String)] = []
