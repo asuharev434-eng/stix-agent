@@ -1,0 +1,10 @@
+{
+  "id": "qwen3-4b-q4_k_m",
+  "file": "Qwen3-4B-Q4_K_M.gguf",
+  "source": "https://huggingface.co/ggml-org/Qwen3-4B-GGUF/resolve/2f3b082b1356a6123f7ed71e65aea340da25d53c/Qwen3-4B-Q4_K_M.gguf",
+  "sourceRevision": "2f3b082b1356a6123f7ed71e65aea340da25d53c",
+  "sha256": "ab27b9bfa375a178d6cba48f3ad892b94b7739659dcc7aae8058ce0ffed6b328",
+  "bytes": 2497280640,
+  "license": "Apache-2.0",
+  "contextLength": 32768
+}

@@ -23,7 +23,9 @@ struct ModelSettingsCard: View {
                     Task { await store.refreshServices(); refreshing = false }
                 } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless).disabled(refreshing)
-                    .help("Обновить модели LM Studio и ComfyUI")
+                    .help("Обновить список моделей")
+                Button { store.importTextModel() } label: { Image(systemName: "plus") }
+                    .buttonStyle(.borderless).help("Добавить локальную модель GGUF")
             }
             Text("Основная модель управляет задачей и обращается к выбранным специалистам при необходимости. Назначения действуют во всех чатах.")
                 .foregroundStyle(.secondary).font(.subheadline)
@@ -54,9 +56,9 @@ struct ModelSettingsCard: View {
                     Text("\(selected) · недоступна").tag(selected)
                 }
                 ForEach(store.preferences.imageProfiles) { profile in Text(profile.name).tag("workflow:" + profile.id) }
-                ForEach(store.checkpoints, id: \.self) { Text($0).tag($0) }
+                ForEach(store.checkpoints, id: \.self) { Text(store.imageModelName($0)).tag($0) }
             } label: { Label("Генерация и правки", systemImage: "photo").frame(width: 185, alignment: .leading) }
-            Text("Для точных правок используются выбранная модель ComfyUI, исходная картинка и при необходимости маска. Терминал, приложения, браузер и очередь — инструменты основной модели.")
+            Text("Для правок используются выбранная модель изображений, исходная картинка и при необходимости маска. Терминал, приложения, браузер и очередь — инструменты основной модели.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 5) {
                 Image(systemName: "checkmark.circle")
@@ -68,7 +70,7 @@ struct ModelSettingsCard: View {
         if let selected, !selected.isEmpty, !store.models.contains(where: { $0.id == selected }) {
             Text("\(selected) · недоступна").tag(selected)
         }
-        ForEach(store.models) { model in Text(model.id).tag(model.id) }
+        ForEach(store.models) { model in Text(model.name).tag(model.id) }
     }
 }
 

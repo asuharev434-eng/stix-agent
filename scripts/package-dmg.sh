@@ -15,7 +15,13 @@ stage="$(mktemp -d "${TMPDIR:-/tmp/}stix-agent-dmg.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 ditto "$app_dir" "$stage/STIX Agent.app"
 ln -s /Applications "$stage/Applications"
-hdiutil create -quiet -volname 'STIX Agent' -srcfolder "$stage" -format UDZO -ov "$output"
+hdiutil create -quiet -volname 'STIX Agent' -srcfolder "$stage" -format ULFO -ov "$output"
 hdiutil verify -quiet "$output"
+if [[ "${STIX_NOTARY_PROFILE:-}" != "" ]]; then
+    xcrun notarytool submit "$output" --keychain-profile "$STIX_NOTARY_PROFILE" --wait --timeout 90m
+    xcrun stapler staple "$output"
+    xcrun stapler validate "$output"
+    spctl --assess --type open --context context:primary-signature --verbose "$output"
+fi
 shasum -a 256 "$output"
 print "Installer: $output"

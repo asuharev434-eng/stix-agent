@@ -19,15 +19,19 @@ final class ProcessRunner: @unchecked Sendable {
             }.value
         }, onCancel: { state.cancel() })
     }
-    func runExecutable(_ executable: String, arguments: [String], directory: String?, timeout: TimeInterval = 120, environment: [String:String] = [:]) async throws -> ProcessResult {
-        guard executable.hasPrefix("/"), !executable.contains("\0"), arguments.count <= 100, arguments.allSatisfy({ !$0.contains("\0") && $0.utf8.count <= 64000 }), timeout.isFinite, timeout > 0 else { throw AgentError.message("Недопустимые аргументы процесса") }
+    func runExecutable(_ executable: String, arguments: [String], directory: String?, timeout: TimeInterval = 120, environment: [String:String] = [:],
+                       maxOutputBytes: Int = 120_000,
+                       onOutput: @escaping @Sendable (Data) -> Void = { _ in }) async throws -> ProcessResult {
+        guard executable.hasPrefix("/"), !executable.contains("\0"), arguments.count <= 100, arguments.allSatisfy({ !$0.contains("\0") && $0.utf8.count <= 64000 }), timeout.isFinite, timeout > 0,
+              (1...4_000_000).contains(maxOutputBytes) else { throw AgentError.message("Недопустимые аргументы процесса") }
         try CredentialEnvironment.validate(environment: environment)
         let state = RunState()
         return try await withTaskCancellationHandler(operation: {
-            try await Task.detached { try Self.execute(arguments: [executable] + arguments, directory: directory, timeout: timeout, state: state, injectedEnvironment: environment) }.value
+            try await Task.detached { try Self.execute(arguments: [executable] + arguments, directory: directory, timeout: timeout, state: state, injectedEnvironment: environment, maxOutputBytes: maxOutputBytes, onOutput: onOutput) }.value
         }, onCancel: { state.cancel() })
     }
-    private static func execute(arguments commandArguments: [String], directory: String?, timeout: TimeInterval, state: RunState, injectedEnvironment: [String: String]) throws -> ProcessResult {
+    private static func execute(arguments commandArguments: [String], directory: String?, timeout: TimeInterval, state: RunState, injectedEnvironment: [String: String], maxOutputBytes: Int = 120_000,
+                                onOutput: @escaping @Sendable (Data) -> Void = { _ in }) throws -> ProcessResult {
         if state.cancelled { throw CancellationError() }
         var descriptors: [Int32] = [0, 0]
         guard pipe(&descriptors) == 0 else { throw POSIXError(.EIO) }
@@ -73,8 +77,9 @@ final class ProcessRunner: @unchecked Sendable {
             while true {
                 let count = Darwin.read(descriptors[0], &buffer, buffer.count)
                 if count <= 0 { break }
-                let remaining = max(0, 120_000 - collected.count)
+                let remaining = max(0, maxOutputBytes - collected.count)
                 if remaining > 0 { collected.append(contentsOf: buffer.prefix(min(count, remaining))) }
+                onOutput(Data(buffer.prefix(count)))
             }
         }
         while !finished {
@@ -97,7 +102,7 @@ final class ProcessRunner: @unchecked Sendable {
         if state.cancelled { throw CancellationError() }
         let exitCode: Int32 = (status & 0x7f) == 0 ? ((status >> 8) & 0xff) : 128 + (status & 0x7f)
         let text = String(decoding: collected, as: UTF8.self)
-        return ProcessResult(output: String(text.prefix(30_000)), exitCode: exitCode, timedOut: timedOut)
+        return ProcessResult(output: String(text.prefix(maxOutputBytes)), exitCode: exitCode, timedOut: timedOut)
     }
 }
 

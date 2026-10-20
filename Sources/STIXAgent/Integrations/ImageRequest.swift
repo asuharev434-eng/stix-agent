@@ -1,6 +1,6 @@
 import Foundation
 
-/// A local ComfyUI request. Paths refer to local files, never remote URLs.
+/// A local image request. Paths refer to local files, never remote URLs.
 struct ImageRequest: Sendable, Equatable, Codable {
     static let defaultNegativePrompt = "low quality, blurry, distorted, watermark"
     var prompt: String
@@ -135,5 +135,46 @@ struct ImageRequest: Sendable, Equatable, Codable {
         guard quote == nil, !escaped else { throw AgentError.message("Незакрытая кавычка или escape в /image") }
         if started { tokens.append(token) }
         return tokens
+    }
+}
+
+extension ImageRequest {
+    private enum CodingKeys: String, CodingKey {
+        case prompt, inputImagePath, maskImagePath, width, height, steps, seed, cfg,
+             denoise, negativePrompt, count, resizeOnly, explicitOptions
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        prompt = try values.decode(String.self, forKey: .prompt)
+        inputImagePath = try values.decodeIfPresent(String.self, forKey: .inputImagePath)
+        maskImagePath = try values.decodeIfPresent(String.self, forKey: .maskImagePath)
+        width = try values.decode(Int.self, forKey: .width)
+        height = try values.decode(Int.self, forKey: .height)
+        steps = try values.decode(Int.self, forKey: .steps)
+        seed = try values.decode(UInt64.self, forKey: .seed)
+        cfg = try values.decode(Double.self, forKey: .cfg)
+        denoise = try values.decode(Double.self, forKey: .denoise)
+        negativePrompt = try values.decode(String.self, forKey: .negativePrompt)
+        count = try values.decode(Int.self, forKey: .count)
+        resizeOnly = try values.decode(Bool.self, forKey: .resizeOnly)
+        explicitOptions = Set(try values.decodeIfPresent([String].self, forKey: .explicitOptions) ?? [])
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(prompt, forKey: .prompt)
+        try values.encodeIfPresent(inputImagePath, forKey: .inputImagePath)
+        try values.encodeIfPresent(maskImagePath, forKey: .maskImagePath)
+        try values.encode(width, forKey: .width)
+        try values.encode(height, forKey: .height)
+        try values.encode(steps, forKey: .steps)
+        try values.encode(seed, forKey: .seed)
+        try values.encode(cfg, forKey: .cfg)
+        try values.encode(denoise, forKey: .denoise)
+        try values.encode(negativePrompt, forKey: .negativePrompt)
+        try values.encode(count, forKey: .count)
+        try values.encode(resizeOnly, forKey: .resizeOnly)
+        try values.encode(explicitOptions.sorted(), forKey: .explicitOptions)
     }
 }

@@ -13,6 +13,7 @@ struct AppStoragePaths {
     var documentation: URL { root.appendingPathComponent("Documentation", isDirectory: true) }
     var workflows: URL { root.appendingPathComponent("Workflows", isDirectory: true) }
     var skills: URL { root.appendingPathComponent("Skills", isDirectory: true) }
+    var models: URL { root.appendingPathComponent("Models", isDirectory: true) }
     func chatAttachments(_ id: UUID) -> URL { root.appendingPathComponent("Chats/" + id.uuidString + "/Attachments", isDirectory: true) }
     func prepare() throws {
         for url in [root, attachments, backups, documentation, workflows, skills] {

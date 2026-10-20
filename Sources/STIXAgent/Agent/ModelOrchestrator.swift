@@ -15,6 +15,7 @@ enum ModelOrchestrator {
         return UInt64((parameters * 0.75 + 1.5) * 1_073_741_824)
     }
     static func fitsAutomatically(_ model: ModelDescriptor, physicalMemory: UInt64, availableMemory: UInt64? = nil) -> Bool {
+        if TinyTextPolicy.applies(model) { return false }
         guard let estimated = estimatedBytes(model.id) else { return true }
         return Double(estimated) <= Double(physicalMemory) * 0.65 && (model.contextLimitIsLoaded == true || availableMemory == nil || estimated <= availableMemory!)
     }
@@ -136,8 +137,9 @@ extension AppStore {
 
     func delegateModel(_ args: JSONValue, chatID: UUID) async throws -> ToolOutcome {
         guard let i = index(chatID) else { throw CancellationError() }
-        try ModelOrchestrator.validateEndpoint(preferences.lmEndpoint)
         let request = try ModelOrchestrator.request(args, installed: models, assignments: specialistAssignments())
+        let (modelRef, engine) = try inferenceRegistry.text(for: request.model)
+        if modelRef.provider == .lmStudio { try ModelOrchestrator.validateEndpoint(preferences.lmEndpoint) }
         if let descriptor = models.first(where: { $0.id == request.model }), !ModelOrchestrator.fitsAutomatically(descriptor, physicalMemory: ProcessInfo.processInfo.physicalMemory, availableMemory: ModelOrchestrator.availableMemory()),
            chats[i].model != request.model, !(preferences.modelRoles ?? [:]).values.contains(request.model) {
             throw AgentError.message("Оценка памяти модели превышает автоматический бюджет Mac (65% RAM). Выберите компактную модель или явно назначьте специалиста в /models")
@@ -147,11 +149,10 @@ extension AppStore {
         let paths = try request.imagePaths.map { try files.resolve($0, workingDirectory: chats[i].folder).path }
         let prepared = try await DocumentReader.prepare(attachments: paths.map { Attachment(path: $0, kind: "image") })
         guard prepared.imageURLs.count == paths.count else { throw AgentError.message("Для image_paths нужны поддерживаемые изображения, а не документы или папки") }
-        let endpoint = preferences.lmEndpoint
         updateTaskPhase("Специалист: \(request.model)…")
         let reply = try await withThrowingTaskGroup(of: LMReply.self) { group in
             group.addTask {
-                try await LMStudioClient(endpoint: endpoint).complete(model: request.model, messages: request.messages(imageURLs: prepared.imageURLs), tools: []) { _ in }
+                return try await engine.complete(model: modelRef.id, messages: request.messages(imageURLs: prepared.imageURLs), tools: [], maxOutputTokens: nil, preserveContext: false, thinking: false, onPhase: { _ in }, onRequest: { _ in }, onReasoning: { _ in }, onText: { _ in })
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: 120_000_000_000)

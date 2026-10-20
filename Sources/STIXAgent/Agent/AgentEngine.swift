@@ -76,7 +76,7 @@ extension AppStore {
             let text = preferences.connections.isEmpty ? "Подключений пока нет. Напишите: «Подключи API» с названием и адресом. Для ключа появится защищённая форма." : preferences.connections.map { "**\($0.name)** · \($0.baseURL)\nДокументация: `\($0.documentationPath)`" }.joined(separator: "\n\n")
             addMessage(.init(role: "assistant", text: text), to: chatID); return true
         case "/help":
-            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/image описание` — генерация через ComfyUI\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/doctor` — сервисы, права, модели и диск\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/pause` — приостановить\n`/skip` — пропустить следующий шаг\n`/compact` — сжать контекст и сохранить переписку\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
+            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/image описание` — генерация выбранной локальной моделью\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/doctor` — сервисы, права, модели и диск\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/pause` — приостановить\n`/skip` — пропустить следующий шаг\n`/compact` — сжать контекст и сохранить переписку\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
         default: return false
         }
     }
@@ -104,6 +104,7 @@ extension AppStore {
         Роли специалистов: \(specialistAssignments().sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "; "))
         Подключения API:\n\(connections.isEmpty ? "нет" : connections)
         Плагины:\n\(pluginList.isEmpty ? "нет" : pluginList)
+        \(chats.first(where: { $0.id == chatID })?.model.hasPrefix("builtin-text:") == true ? "Для вопроса без действий отвечай обычным текстом без JSON. Вызывай только инструменты, схемы которых переданы вместе с текущим запросом." : "")
         """
     }
     func runAgent(text: String, attachments: [Attachment], chatID: UUID, sourceMessageID: UUID? = nil) async throws {
@@ -113,9 +114,14 @@ extension AppStore {
         var model = chats[i].model
         if model.isEmpty {
             updateTaskPhase("Поиск локальных моделей…")
-            let list = try await LMStudioClient(endpoint: preferences.lmEndpoint).models(); models = list
-            guard let first = list.first else { throw AgentError.message("В LM Studio нет доступных моделей. Загрузите модель и включите локальный API.") }
+            if models.isEmpty { await refreshServices() }
+            guard let first = models.first else { throw AgentError.message("Нет доступной текстовой модели. Проверьте встроенную сборку или локальный API в /diagnostics.") }
             model = first.id; if let updated = index(chatID) { chats[updated].model = model }
+        }
+        if let descriptor = models.first(where: { $0.id == model }), TinyTextPolicy.applies(descriptor) {
+            try await runTinyText(text: text, attachments: attachments, chatID: chatID,
+                                  sourceMessageID: sourceMessageID, descriptor: descriptor)
+            return
         }
         let prepared = try await prepareAgentAttachments(attachments)
         let attachmentText = prepared.text
@@ -147,14 +153,18 @@ extension AppStore {
             do {
                 let conclusion = concludeRepeatedTool ? "\nПовторный вызов инструмента остановлен. Используй сохранённые результаты; если результат неизвестен после прерывания, честно укажи необходимость проверки состояния. Дай краткий итог без инструментов, укажи фактический результат и честно назови оставшиеся невыполненные части, если они есть." : ""
                 let prompt = clean ? "" : systemPrompt(chatID: chatID) + conclusion
-                if let live = try await ModelResidency.shared.prepare(client: LMStudioClient(endpoint: endpoint), model: model) {
+                let (modelRef, textEngine) = try inferenceRegistry.text(for: model)
+                if modelRef.provider == .lmStudio, await LocalServices.ensureModelServer(preferred: endpoint) == nil {
+                    throw AgentError.message("Выбранный локальный API LM Studio / Bionic недоступен")
+                }
+                if let live = try await textEngine.prepare(model: modelRef.id) {
                     liveContextLimits[endpoint + "|" + model] = live
                 }
                 let tools = clean || concludeRepeatedTool ? [] : toolsForRequest(chatID: chatID, system: prompt, currentRequest: text)
                 updateTaskPhase("Подготовка контекста и модели…")
                 let history = try await preparedContext(chatID: chatID, model: model, system: prompt, tools: tools)
 
-                reply = try await LMStudioClient(endpoint: endpoint).complete(model: model, messages: modelMessages(chatID: chatID, system: prompt, history: history), tools: tools, maxOutputTokens: resourceOutputLimit, thinking: preferences.thinking ?? false, onPhase: { phase in await store.updateTaskPhase(phase) }, onRequest: { [model] finalMessages in
+                reply = try await textEngine.complete(model: modelRef.id, messages: modelMessages(chatID: chatID, system: prompt, history: history), tools: tools, maxOutputTokens: resourceOutputLimit, preserveContext: false, thinking: preferences.thinking ?? false, onPhase: { phase in await store.updateTaskPhase(phase) }, onRequest: { [model] finalMessages in
                     await store.captureContextRequest(model: model, messages: finalMessages, tools: tools, chatID: chatID)
                 }, onReasoning: { token in
                     await store.receiveReasoning(token)
@@ -270,25 +280,54 @@ extension AppStore {
         }
         do {
             var request = try ImageRequest.parse("/image " + prompt, lastImagePath: lastImagePath(chatID: chatID), inputImagePath: attachments.first(where: { $0.kind == "image" })?.path)
+            if selected.hasPrefix("builtin-image:"), request.explicitOptions.isDisjoint(with: ["size", "width", "height"]), !request.resizeOnly {
+                request.width = 512; request.height = 512
+            }
             if !request.resizeOnly {
                 let textModel = chats[i].imagePromptModel ?? chats[i].model
                 guard !textModel.isEmpty else { throw AgentError.message("Выберите текстовую модель для подготовки промпта") }
-                try ModelOrchestrator.validateEndpoint(preferences.lmEndpoint)
-                updateTaskPhase("Подготовка промпта: " + textModel)
                 reasoningText = ""; transientReasoning = ""
                 let messages = ImagePromptAdapter.messages(request: request, imageModel: selected, workflow: workflow, language: chats[i].imagePromptLanguage ?? "auto")
-                let reply = try await LMStudioClient(endpoint: preferences.lmEndpoint).complete(model: textModel, messages: messages, tools: [], thinking: preferences.thinking ?? false, onReasoning: { token in await store.receiveReasoning(token) }) { _ in }
-                let adapted = try ImagePromptAdapter.parse(vault.redact(reply.content))
+                func prepare(using modelID: String) async throws -> ImagePromptAdapter.Result {
+                    let (promptRef, promptEngine) = try inferenceRegistry.text(for: modelID)
+                    if promptRef.provider == .lmStudio { try ModelOrchestrator.validateEndpoint(preferences.lmEndpoint) }
+                    updateTaskPhase("Подготовка промпта: " + modelID)
+                    let reply = try await promptEngine.complete(model: promptRef.id, messages: messages, tools: [], maxOutputTokens: nil, preserveContext: false, thinking: preferences.thinking ?? false, onPhase: { _ in }, onRequest: { _ in }, onReasoning: { token in await store.receiveReasoning(token) }, onText: { _ in })
+                    return try ImagePromptAdapter.parse(vault.redact(reply.content))
+                }
+                let fallback = chats[i].model.hasPrefix("builtin-text:") ? chats[i].model : models.first(where: { $0.id.hasPrefix("builtin-text:") })?.id
+                var usedModel = textModel
+                let adapted: ImagePromptAdapter.Result
+                do {
+                    if !textModel.hasPrefix("builtin-text:"),
+                       !(await LocalServices.modelReady(preferences.lmEndpoint)),
+                       let fallback, fallback != textModel {
+                        usedModel = fallback
+                        updateTaskPhase("Внешняя модель недоступна; использую встроенную для промпта…")
+                    }
+                    adapted = try await prepare(using: usedModel)
+                } catch {
+                    guard !(error is CancellationError), let fallback, fallback != usedModel,
+                          !usedModel.hasPrefix("builtin-text:") else { throw error }
+                    usedModel = fallback
+                    updateTaskPhase("Модель подготовки промпта не ответила; использую встроенную…")
+                    adapted = try await prepare(using: fallback)
+                }
                 request.prompt = adapted.prompt
                 if !request.explicitOptions.contains("negative") { request.negativePrompt = adapted.negative }
-                editMessage(card.id, chatID: chatID) { $0.detail = "Исходное описание:\n\(prompt)\n\nТекстовая модель: \(textModel)\nМодель изображения: \(selected)\n\nПодготовленный промпт:\n\(adapted.prompt)\n\nNegative:\n\(adapted.negative)" }
+                editMessage(card.id, chatID: chatID) { $0.detail = "Исходное описание:\n\(prompt)\n\nТекстовая модель: \(usedModel)\nМодель изображения: \(selected)\n\nПодготовленный промпт:\n\(adapted.prompt)\n\nNegative:\n\(adapted.negative)" }
                 reasoningText = ""; transientReasoning = ""
                 updateTaskPhase("Генерация изображения…")
             }
             if let id = activeJobID, let job = jobs.firstIndex(where: { $0.id == id }) { jobs[job].imageSubmissionStarted = true }; save()
             guard canPersist else { throw AgentError.message("Не удалось сохранить начало генерации; запрос не отправлен") }
             if resourceOutputLimit != nil && !request.explicitOptions.contains("steps") { request.steps = min(request.steps, 12) }
-            let urls = try await ComfyClient(endpoint: preferences.comfyEndpoint).generate(request: request, checkpoint: selected.hasPrefix("workflow:") ? "" : selected, outputDirectory: storage.paths.chatAttachments(chatID), workflow: workflow, onStepProgress: { value, total in await store.updateImageStep(value, total: total) }) { progress in await store.updateActivity(progress) }
+            let (imageRef, imageEngine) = try inferenceRegistry.image(for: selected)
+            if imageRef.provider == .comfyUI,
+               !(try await LocalServices.ensureComfyServer(endpoint: preferences.comfyEndpoint, paths: storage.paths)) {
+                throw AgentError.message("Выбранный локальный API ComfyUI недоступен")
+            }
+            let urls = try await imageEngine.generate(request: request, model: selected.hasPrefix("workflow:") ? "" : imageRef.id, outputDirectory: storage.paths.chatAttachments(chatID), workflow: workflow, onStepProgress: { value, total in await store.updateImageStep(value, total: total) }, onProgress: { progress in await store.updateActivity(progress) })
             let verificationPaths = storage.paths
             for url in urls {
                 let verification = try await fileWork { try ResultVerifier.image(url.path, paths: verificationPaths) }
@@ -298,7 +337,7 @@ extension AppStore {
             // This completed diffusion request loaded the image weights even when
             // ComfyUI was already running. Return that memory before the next LLM
             // turn; queue checks keep active/pending generations untouched.
-            if !request.resizeOnly { try? await ComfyClient(endpoint: preferences.comfyEndpoint).releaseModelsIfIdle() }
+            if !request.resizeOnly { try? await imageEngine.releaseIfIdle() }
             features.imageRecipes.append(.init(chatID: chatID, attachmentPaths: urls.map(\.path), request: request, model: selected, workflow: workflow)); save()
             editMessage(card.id, chatID: chatID) { $0.text = "Изображение готово"; $0.status = "done"; $0.attachments = urls.map { .init(path: $0.path, kind: "image") } }
         } catch { editMessage(card.id, chatID: chatID) { $0.status = "error" }; throw error }

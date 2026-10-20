@@ -7,6 +7,13 @@ extension AppStore {
     func contextWindow(chatID: UUID, includeDraft: Bool = false) -> ContextWindow? {
         guard let i = index(chatID) else { return nil }
         let chat = chats[i]
+        if let descriptor = models.first(where: { $0.id == chat.model }), TinyTextPolicy.applies(descriptor) {
+            let text = includeDraft && selectedID == chatID ? draft : chat.history.last(where: { $0.role == "user" })?.content ?? ""
+            let used = text.isEmpty ? 0 : text.unicodeScalars.count + 17
+            return ContextWindow(limit: descriptor.contextLimit ?? 128, knownLimit: true,
+                                 systemTokens: 0, toolTokens: 0, historyTokens: used,
+                                 reserveTokens: min(80, max(0, (descriptor.contextLimit ?? 128) - used)))
+        }
         var history = ContextCompaction.effective(history: chat.history, checkpoint: chat.contextCheckpoint)
         if includeDraft && selectedID == chatID && (!draft.isEmpty || !attachments.isEmpty) {
             history.append(.init(role: "user", content: draft, imageURLs: attachments.filter { $0.kind == "image" }.map(\.path)))
@@ -19,6 +26,10 @@ extension AppStore {
     }
     func toolsForRequest(chatID: UUID, system: String, currentRequest: String) -> [ToolDefinition] {
         guard let i = index(chatID), !chats[i].isClean else { return [] }
+        if chats[i].model.hasPrefix("builtin-text:") {
+            return ToolExposure.selectedForBuiltIn(from: allTools(), currentRequest: currentRequest,
+                                                   exposed: exposedToolNames)
+        }
         return ToolExposure.selected(from: allTools(), limit: contextLimit(for: chats[i]), system: system, currentRequest: currentRequest, exposed: exposedToolNames)
     }
     func modelMessages(chatID: UUID, system: String, history: [LMMessage]) -> [LMMessage] {
@@ -61,8 +72,8 @@ extension AppStore {
         guard compactingChatID == nil else { throw AgentError.message("Сжатие уже выполняется") }
         compactingChatID = chatID; contextNotices[chatID] = nil
         defer { compactingChatID = nil }
-        let client = LMStudioClient(endpoint: endpoint)
-        if summarize == nil, let limit = try await ModelResidency.shared.prepare(client: client, model: chat.model) {
+        let (modelRef, textEngine) = try inferenceRegistry.text(for: chat.model)
+        if summarize == nil, let limit = try await textEngine.prepare(model: modelRef.id) {
             liveContextLimits[endpoint + "|" + chat.model] = limit
         }
         let capacity = min(contextLimit(for: chat) ?? 32768, 32768)
@@ -85,7 +96,7 @@ extension AppStore {
             let reply: String
             if let summarize { reply = try await summarize(messages, outputTokens) }
             else {
-                reply = try await client.complete(model: chat.model, messages: messages, tools: [], maxOutputTokens: outputTokens, preserveContext: true, thinking: false) { _ in }.content
+                reply = try await textEngine.complete(model: modelRef.id, messages: messages, tools: [], maxOutputTokens: outputTokens, preserveContext: true, thinking: false, onPhase: { _ in }, onRequest: { _ in }, onReasoning: { _ in }, onText: { _ in }).content
             }
             summary = ModelOutput.clean(vault.redact(reply)).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !summary.isEmpty, summary.count <= summaryLimit, ContextWindow.tokens(summary) <= summaryLimit else {
@@ -117,7 +128,8 @@ extension AppStore {
     }
     func preparedContext(chatID: UUID, model: String, system: String, tools: [ToolDefinition], summarize: (([LMMessage], Int) async throws -> String)? = nil) async throws -> [LMMessage] {
         let endpoint = preferences.lmEndpoint
-        if summarize == nil, let live = try await ModelResidency.shared.prepare(client: LMStudioClient(endpoint: endpoint), model: model) {
+        let (modelRef, textEngine) = try inferenceRegistry.text(for: model)
+        if summarize == nil, let live = try await textEngine.prepare(model: modelRef.id) {
             liveContextLimits[endpoint + "|" + model] = live
         }
         guard let i = index(chatID), chats[i].model == model else { throw AgentError.message("Выбранная модель изменилась. Продолжите задачу с новой моделью.") }
