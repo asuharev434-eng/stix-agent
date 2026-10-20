@@ -29,6 +29,7 @@ enum GGUFInspector {
         let tokenizer: String
         let contextLength: Int
         let name: String
+        let chatTemplate: String?
     }
 
     static func inspect(_ url: URL) throws -> Metadata {
@@ -89,7 +90,8 @@ enum GGUFInspector {
         for _ in 0..<entries {
             let key = try string(collect: true)
             let type: UInt32 = try number(UInt32.self)
-            let wanted = key == "general.architecture" || key == "general.name" || key == "tokenizer.ggml.model" || key.hasSuffix(".context_length")
+            let wanted = key == "general.architecture" || key == "general.name" || key == "tokenizer.ggml.model" ||
+                key == "tokenizer.chat_template" || key.hasSuffix(".context_length")
             let val = try value(type, collect: wanted)
             if wanted { found[key] = val }
         }
@@ -102,7 +104,8 @@ enum GGUFInspector {
         let minimumContext = architecture == "gpt2" ? 128 : 2048
         guard (minimumContext...262_144).contains(context) else { throw AgentError.message("Некорректное контекстное окно GGUF") }
         return Metadata(architecture: architecture, tokenizer: tokenizer, contextLength: context,
-                        name: found["general.name"] ?? url.deletingPathExtension().lastPathComponent)
+                        name: found["general.name"] ?? url.deletingPathExtension().lastPathComponent,
+                        chatTemplate: found["tokenizer.chat_template"])
     }
 }
 
@@ -144,7 +147,8 @@ actor LocalModelLibrary: TextInferenceEngine {
         try initialize()
         let defaults = try await bundled?.models() ?? []
         return defaults + imported.map {
-            ModelDescriptor(id: "builtin-text:" + $0.id, kind: "text",
+            ModelDescriptor(id: "builtin-text:" + $0.id,
+                            kind: $0.projectorFileName == nil ? "text" : "vlm",
                             contextLimit: min($0.contextLength, $0.bytes > 12 * 1024 * 1024 * 1024 ? 4096 : 32768),
                             displayName: $0.name + " · импортирована")
         }

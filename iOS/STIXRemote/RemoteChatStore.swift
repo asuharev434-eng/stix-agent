@@ -18,6 +18,9 @@ struct MobileDraftUpload: Identifiable, Sendable {
 final class RemoteChatStore: ObservableObject {
     @Published private(set) var isPaired = false
     @Published private(set) var snapshot: RemoteSnapshot?
+    @Published private(set) var cachedMacTextModels: [RemoteModel] = []
+    @Published private(set) var cachedMacImageModels: [RemoteModel] = []
+    @Published private(set) var cachedMacImagePromptModelID: String?
     @Published private(set) var connected = false
     @Published private(set) var checkingConnection = false
     @Published private(set) var offlineMode = false
@@ -41,6 +44,7 @@ final class RemoteChatStore: ObservableObject {
     private var imageLoads: Set<UUID> = []
     private let cloud = RemoteCloudMailbox()
     private var preferCloud = false
+    private var lastNearbyAttempt: Date?
     private var cloudBusy = false
     private var pendingSend: (text: String, uploadID: UUID?, id: UUID)?
     private var localGeneration: LocalGeneration?
@@ -57,10 +61,16 @@ final class RemoteChatStore: ObservableObject {
     var displayMessages: [RemoteMessage] {
         offlineMode ? localMessages : (snapshot?.messages ?? [])
     }
+    var macTextModels: [RemoteModel] { snapshot?.models ?? cachedMacTextModels }
+    var macImageModels: [RemoteModel] { snapshot?.imageModels ?? cachedMacImageModels }
+    var macImagePromptModelID: String? { snapshot?.imagePromptModelID ?? cachedMacImagePromptModelID }
 
     init() {
         let saved = LocalMobileState.load()
         offlineMode = saved.offlineMode
+        cachedMacTextModels = saved.macTextModels ?? []
+        cachedMacImageModels = saved.macImageModels ?? []
+        cachedMacImagePromptModelID = saved.macImagePromptModelID
         localModels = LocalModelLibrary.available()
         selectedLocalModelID = saved.selectedModelID
         localImageModels = LocalImageModelLibrary.available()
@@ -114,6 +124,7 @@ final class RemoteChatStore: ObservableObject {
             guard let snapshot = response.snapshot else { throw RemoteChatError.invalidFrame }
             try RemoteKeychain.save(JSONEncoder().encode(code))
             self.code = code; self.snapshot = snapshot; isPaired = true; connected = true; error = nil
+            cacheMacCatalog(snapshot)
             lastRemoteAssistantID = snapshot.messages.last(where: { $0.role == "assistant" })?.id
             offlineMode = false; persistLocalState()
             await start()
@@ -133,6 +144,7 @@ final class RemoteChatStore: ObservableObject {
             }
             guard let snapshot = response.snapshot else { throw RemoteChatError.invalidFrame }
             self.snapshot = snapshot; loadImages(in: snapshot)
+            if cacheMacCatalog(snapshot) { persistLocalState() }
             let latest = snapshot.messages.last(where: { $0.role == "assistant" })
             if let knownAssistantID, knownAssistantID != latest?.id,
                UIApplication.shared.applicationState != .active, let latest {
@@ -189,6 +201,7 @@ final class RemoteChatStore: ObservableObject {
             draft = ""; pendingUpload = nil; pendingSend = nil
             if let snapshot = response.snapshot {
                 self.snapshot = snapshot; loadImages(in: snapshot)
+                cacheMacCatalog(snapshot)
                 lastRemoteAssistantID = snapshot.messages.last(where: { $0.role == "assistant" })?.id
                 persistLocalState()
             }
@@ -390,6 +403,7 @@ final class RemoteChatStore: ObservableObject {
             let response = try await perform(.init(operation: "answer", interactionID: interaction.id, answer: answer), with: code)
             if let error = response.error { throw NSError(domain: "STIXRemote", code: 2, userInfo: [NSLocalizedDescriptionKey: error]) }
             snapshot = response.snapshot; self.error = nil
+            if let snapshot { cacheMacCatalog(snapshot); persistLocalState() }
         } catch { self.error = error.localizedDescription }
     }
 
@@ -399,6 +413,7 @@ final class RemoteChatStore: ObservableObject {
             let response = try await perform(.init(operation: image ? "set-image-model" : "set-model", text: id), with: code)
             if let error = response.error { throw NSError(domain: "STIXRemote", code: 4, userInfo: [NSLocalizedDescriptionKey: error]) }
             snapshot = response.snapshot; self.error = nil
+            if let snapshot { cacheMacCatalog(snapshot); persistLocalState() }
         } catch { self.error = error.localizedDescription }
     }
 
@@ -408,12 +423,14 @@ final class RemoteChatStore: ObservableObject {
             let response = try await perform(.init(operation: "set-image-prompt-model", text: id ?? "automatic"), with: code)
             if let error = response.error { throw NSError(domain: "STIXRemote", code: 5, userInfo: [NSLocalizedDescriptionKey: error]) }
             snapshot = response.snapshot; self.error = nil
+            if let snapshot { cacheMacCatalog(snapshot); persistLocalState() }
         } catch { self.error = error.localizedDescription }
     }
 
     func disconnect() {
         polling?.cancel(); polling = nil
         RemoteKeychain.remove(); code = nil; snapshot = nil; images = [:]
+        cachedMacTextModels = []; cachedMacImageModels = []; cachedMacImagePromptModelID = nil
         imageData = [:]
         pendingSend = nil
         lastRemoteAssistantID = nil; persistLocalState()
@@ -426,8 +443,21 @@ final class RemoteChatStore: ObservableObject {
                                  selectedModelID: selectedLocalModelID,
                                  selectedImageModelID: selectedLocalImageModelID,
                                  imagePaths: localImagePaths,
-                                 lastRemoteAssistantID: lastRemoteAssistantID).save()
+                                 lastRemoteAssistantID: lastRemoteAssistantID,
+                                 macTextModels: cachedMacTextModels,
+                                 macImageModels: cachedMacImageModels,
+                                 macImagePromptModelID: cachedMacImagePromptModelID).save()
         } catch { self.error = "Не удалось сохранить локальную историю: \(error.localizedDescription)" }
+    }
+
+    @discardableResult
+    private func cacheMacCatalog(_ snapshot: RemoteSnapshot) -> Bool {
+        guard cachedMacTextModels != snapshot.models || cachedMacImageModels != snapshot.imageModels ||
+                cachedMacImagePromptModelID != snapshot.imagePromptModelID else { return false }
+        cachedMacTextModels = snapshot.models
+        cachedMacImageModels = snapshot.imageModels
+        cachedMacImagePromptModelID = snapshot.imagePromptModelID
+        return true
     }
 
     func saveImage(_ attachmentID: UUID) async throws {
@@ -479,13 +509,18 @@ final class RemoteChatStore: ObservableObject {
     private func perform(_ request: RemoteRequest, with code: RemotePairingCode,
                          requestID id: UUID = UUID()) async throws -> RemoteResponse {
         let envelope = try RemoteEnvelope.seal(request, peerID: code.pairingID, requestID: id, key: code.key)
-        if !preferCloud {
+        // A transient Bonjour failure must not pin the phone to CloudKit forever.
+        // Retry the direct route periodically, including after the Mac restarts.
+        if !preferCloud || lastNearbyAttempt.map({ Date().timeIntervalSince($0) > 20 }) == true {
+            lastNearbyAttempt = .now
             do {
                 let response = try await performNearby(envelope, code: code)
+                preferCloud = false
                 return try decode(response, requestID: id, code: code)
             } catch { preferCloud = true }
         }
         guard let cloud, await cloud.isAvailable() else {
+            preferCloud = false
             throw NSError(domain: "STIXRemote", code: 3, userInfo: [NSLocalizedDescriptionKey:
                 "Для связи из другой сети войдите в один Apple Account на iPhone и Mac"])
         }
@@ -500,6 +535,7 @@ final class RemoteChatStore: ObservableObject {
             }
             try await Task.sleep(for: .seconds(2))
         }
+        preferCloud = false
         throw URLError(.timedOut)
     }
 
@@ -526,6 +562,9 @@ private struct LocalMobileState: Codable {
     var selectedImageModelID: String?
     var imagePaths: [UUID: String]?
     var lastRemoteAssistantID: UUID?
+    var macTextModels: [RemoteModel]?
+    var macImageModels: [RemoteModel]?
+    var macImagePromptModelID: String?
 
     private static var url: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

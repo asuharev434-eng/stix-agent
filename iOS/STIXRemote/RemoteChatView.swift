@@ -302,12 +302,18 @@ struct RemoteChatView: View {
     }
 
     private func modelMenu(image: Bool) -> some View {
-        let choices = image ? (store.snapshot?.imageModels ?? []) : (store.snapshot?.models ?? [])
+        let choices = image ? store.macImageModels : store.macTextModels
         let name = choices.first(where: \.selected)?.name ?? (image ? "Модель фото" : "Модель текста")
         return Menu {
             ForEach(choices) { model in
                 Button(model.name, systemImage: model.selected ? "checkmark" : "circle") {
                     Task { await store.selectModel(model.id, image: image) }
+                }.disabled(!store.connected)
+            }
+            if !store.connected && !choices.isEmpty {
+                Text("Последний список Mac · ожидаю подключение")
+                Button("Обновить список", systemImage: "arrow.clockwise") {
+                    Task { await store.refresh() }
                 }
             }
             if choices.isEmpty {
@@ -330,16 +336,16 @@ struct RemoteChatView: View {
 
     private var imagePromptMenu: some View {
         Menu {
-            Button("Автоматически", systemImage: store.snapshot?.imagePromptModelID == nil ? "checkmark" : "circle") {
+            Button("Автоматически", systemImage: store.macImagePromptModelID == nil ? "checkmark" : "circle") {
                 Task { await store.selectImagePromptModel(nil) }
-            }
-            ForEach((store.snapshot?.models ?? []).filter { $0.supportsImagePrompt != false }) { model in
-                Button(model.name, systemImage: store.snapshot?.imagePromptModelID == model.id ? "checkmark" : "circle") {
+            }.disabled(!store.connected)
+            ForEach(store.macTextModels.filter { $0.supportsImagePrompt != false }) { model in
+                Button(model.name, systemImage: store.macImagePromptModelID == model.id ? "checkmark" : "circle") {
                     Task { await store.selectImagePromptModel(model.id) }
-                }
+                }.disabled(!store.connected)
             }
         } label: {
-            Label("Промпт: " + (store.snapshot?.models.first(where: { $0.id == store.snapshot?.imagePromptModelID })?.name ?? "Авто"),
+            Label("Промпт: " + (store.macTextModels.first(where: { $0.id == store.macImagePromptModelID })?.name ?? "Авто"),
                   systemImage: "text.bubble")
                 .lineLimit(1).font(.caption.weight(.medium))
                 .padding(.horizontal, 11).padding(.vertical, 8)

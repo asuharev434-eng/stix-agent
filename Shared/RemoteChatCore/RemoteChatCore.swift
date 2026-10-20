@@ -134,7 +134,7 @@ public struct RemoteSnapshot: Codable, Sendable {
     }
 }
 
-public struct RemoteModel: Codable, Identifiable, Sendable {
+public struct RemoteModel: Codable, Identifiable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let selected: Bool
