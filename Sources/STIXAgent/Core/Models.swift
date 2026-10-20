@@ -97,6 +97,7 @@ enum ChatMode: String, Codable { case agent, clean }
 struct Chat: Codable, Identifiable {
     var id = UUID()
     var title = "Новый чат"
+    var isMobile: Bool? = nil
     var folder: String? = nil
     var model = ""
     var mode: ChatMode? = nil

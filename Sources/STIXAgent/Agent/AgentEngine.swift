@@ -1,4 +1,5 @@
 import Foundation
+import RemoteChatCore
 
 extension AppStore {
     func send() {
@@ -44,6 +45,12 @@ extension AppStore {
     func handleLocalCommand(_ text: String, chatID: UUID) -> Bool {
         if handleKnowledgeCommand(text, chatID: chatID) { return true }
         let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if (lower.contains("qr") || lower.contains("куар")) &&
+            ["iphone", "айфон", "телефон"].contains(where: lower.contains) &&
+            ["подключ", "сопряж", "покажи", "дай", "выведи"].contains(where: lower.contains) {
+            Task { await showMobilePairing(in: chatID) }
+            return true
+        }
         let theme: String?
         if lower == "/theme dark" || ["включи темную тему", "включи тёмную тему", "включи темную тему в этом приложении", "включи тёмную тему в этом приложении"].contains(lower) { theme = "dark" }
         else if lower == "/theme light" || lower == "включи светлую тему" { theme = "light" }
@@ -58,6 +65,17 @@ extension AppStore {
             return true
         }
         switch lower {
+        case "/mobile devices":
+            let names = remoteChat.connectedDeviceNames
+            addMessage(.init(role: "assistant", text: names.isEmpty ? "Подключённых iPhone нет." : "Подключённые iPhone:\n" + names.map { "• " + $0 }.joined(separator: "\n")), to: chatID)
+            return true
+        case "/mobile revoke":
+            do { try remoteChat.revokeAll(); addMessage(.init(role: "assistant", text: "Доступ всех iPhone отозван. Для нового подключения запросите /mobile."), to: chatID) }
+            catch { addMessage(.init(role: "assistant", text: error.localizedDescription, status: "error"), to: chatID) }
+            return true
+        case "/mobile", "подключи iphone", "подключить iphone", "покажи qr для iphone":
+            Task { await showMobilePairing(in: chatID) }
+            return true
         case "/compact", "сожми контекст", "сжать контекст":
             if busy { addMessage(.init(role: "assistant", text: "Сжатие доступно после текущей задачи; автосжатие включено."), to: chatID) }
             else if let i = index(chatID), ContextCompaction.plan(history: chats[i].history, checkpoint: chats[i].contextCheckpoint) != nil { requestContextCompaction(chatID: chatID, announce: true) }
@@ -76,7 +94,7 @@ extension AppStore {
             let text = preferences.connections.isEmpty ? "Подключений пока нет. Напишите: «Подключи API» с названием и адресом. Для ключа появится защищённая форма." : preferences.connections.map { "**\($0.name)** · \($0.baseURL)\nДокументация: `\($0.documentationPath)`" }.joined(separator: "\n\n")
             addMessage(.init(role: "assistant", text: text), to: chatID); return true
         case "/help":
-            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/image описание` — генерация выбранной локальной моделью\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/doctor` — сервисы, права, модели и диск\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/pause` — приостановить\n`/skip` — пропустить следующий шаг\n`/compact` — сжать контекст и сохранить переписку\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
+            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/mobile` — QR-код для iPhone\n`/image описание` — генерация выбранной локальной моделью\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/doctor` — сервисы, права, модели и диск\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/pause` — приостановить\n`/skip` — пропустить следующий шаг\n`/compact` — сжать контекст и сохранить переписку\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
         default: return false
         }
     }
@@ -284,8 +302,9 @@ extension AppStore {
                 request.width = 512; request.height = 512
             }
             if !request.resizeOnly {
-                let textModel = chats[i].imagePromptModel ?? chats[i].model
-                guard !textModel.isEmpty else { throw AgentError.message("Выберите текстовую модель для подготовки промпта") }
+                guard let textModel = imagePromptModel(for: chats[i]) else {
+                    throw AgentError.message("Для /image нужна текстовая модель с достаточным контекстом. Выберите её в меню моделей.")
+                }
                 reasoningText = ""; transientReasoning = ""
                 let messages = ImagePromptAdapter.messages(request: request, imageModel: selected, workflow: workflow, language: chats[i].imagePromptLanguage ?? "auto")
                 func prepare(using modelID: String) async throws -> ImagePromptAdapter.Result {
@@ -295,7 +314,8 @@ extension AppStore {
                     let reply = try await promptEngine.complete(model: promptRef.id, messages: messages, tools: [], maxOutputTokens: nil, preserveContext: false, thinking: preferences.thinking ?? false, onPhase: { _ in }, onRequest: { _ in }, onReasoning: { token in await store.receiveReasoning(token) }, onText: { _ in })
                     return try ImagePromptAdapter.parse(vault.redact(reply.content))
                 }
-                let fallback = chats[i].model.hasPrefix("builtin-text:") ? chats[i].model : models.first(where: { $0.id.hasPrefix("builtin-text:") })?.id
+                let fallback = models.first(where: { $0.id == "builtin-text:qwen3-4b-q4_k_m" })?.id
+                    ?? models.first(where: { $0.id.hasPrefix("builtin-text:") && !TinyTextPolicy.applies($0) })?.id
                 var usedModel = textModel
                 let adapted: ImagePromptAdapter.Result
                 do {
@@ -341,6 +361,13 @@ extension AppStore {
             features.imageRecipes.append(.init(chatID: chatID, attachmentPaths: urls.map(\.path), request: request, model: selected, workflow: workflow)); save()
             editMessage(card.id, chatID: chatID) { $0.text = "Изображение готово"; $0.status = "done"; $0.attachments = urls.map { .init(path: $0.path, kind: "image") } }
         } catch { editMessage(card.id, chatID: chatID) { $0.status = "error" }; throw error }
+    }
+    func imagePromptModel(for chat: Chat) -> String? {
+        let selected = chat.imagePromptModel ?? chat.model
+        if let model = models.first(where: { $0.id == selected }), !TinyTextPolicy.applies(model) { return model.id }
+        return models.first(where: { $0.id == "builtin-text:qwen3-4b-q4_k_m" })?.id
+            ?? models.first(where: { $0.id.hasPrefix("builtin-text:") && !TinyTextPolicy.applies($0) })?.id
+            ?? models.first(where: { $0.kind != "embedding" && !TinyTextPolicy.applies($0) })?.id
     }
     func repairChatHistory(_ id: UUID) { if let i = index(id) { repairHistory(&chats[i].history) } }
     func displayToolName(_ tool: String) -> String {

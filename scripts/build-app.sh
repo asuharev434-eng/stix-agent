@@ -63,6 +63,18 @@ if [[ "${STIX_BUNDLE_MLX:-0}" == "1" ]]; then
     done
 fi
 cp "$project_dir/scripts/Info.plist" "$app_dir/Contents/Info.plist"
+if [[ -n "${STIX_MAC_PROFILE:-}" ]]; then
+    [[ -f "$STIX_MAC_PROFILE" ]] || { print -u2 "Mac provisioning profile not found: $STIX_MAC_PROFILE"; exit 1; }
+    profile_info="$(mktemp)"
+    trap 'rm -f "$profile_info"' EXIT
+    security cms -D -i "$STIX_MAC_PROFILE" > "$profile_info"
+    profile_app="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$profile_info")"
+    [[ "$profile_app" == *.studio.stix.agent ]] || { print -u2 "Mac profile has a different app ID"; exit 1; }
+    /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.icloud-container-identifiers' "$profile_info" | grep -q 'iCloud.studio.stix.agent' || {
+        print -u2 "Mac profile does not authorize STIX CloudKit"; exit 1
+    }
+    cp "$STIX_MAC_PROFILE" "$app_dir/Contents/embedded.provisionprofile"
+fi
 if [[ -f "$project_dir/Sources/STIXAgent/Resources/AppIcon.icns" ]]; then
     cp "$project_dir/Sources/STIXAgent/Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
 fi

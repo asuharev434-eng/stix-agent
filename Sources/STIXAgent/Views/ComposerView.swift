@@ -50,6 +50,9 @@ struct ComposerView: View {
             editor
             if canSteer { steeringControl }
             if imageMode { imagePromptModelControl }
+            else if store.currentChat?.isMobile == true {
+                HStack(spacing: 8) { mobileImageModelControl; imagePromptModelControl }
+            }
             footer
             HStack(spacing: 14) {
                 questionControl
@@ -143,7 +146,7 @@ struct ComposerView: View {
                     guard let id = store.selectedID, let index = store.index(id) else { return }
                     store.chats[index].imagePromptModel = nil; store.save()
                 }
-                ForEach(store.models) { model in
+                ForEach(store.models.filter { !TinyTextPolicy.applies($0) && $0.kind != "embedding" }) { model in
                     Button(model.name) {
                         guard let id = store.selectedID, let index = store.index(id) else { return }
                         store.chats[index].imagePromptModel = model.id; store.save()
@@ -151,7 +154,7 @@ struct ComposerView: View {
                 }
                 if store.models.isEmpty { Text("Модели не найдены") }
             } label: {
-                let selected = store.currentChat?.imagePromptModel ?? store.currentChat?.model ?? ""
+                let selected = store.currentChat.flatMap { store.imagePromptModel(for: $0) } ?? ""
                 HStack(spacing: 6) {
                     Image(systemName: "text.bubble")
                     Text(selected.isEmpty ? "Выбрать модель" : store.models.first(where: { $0.id == selected })?.name ?? selected).lineLimit(1)
@@ -163,6 +166,28 @@ struct ComposerView: View {
                 .help("Локальная языковая модель переводит и адаптирует описание перед генерацией изображения")
             Spacer(minLength: 0)
         }
+    }
+    private var mobileImageModelControl: some View {
+        Menu {
+            ForEach(store.preferences.imageProfiles) { profile in
+                Button(profile.name) { store.setModel("workflow:" + profile.id, image: true) }
+            }
+            ForEach(store.checkpoints, id: \.self) { id in
+                Button(store.imageModelName(id)) { store.setModel(id, image: true) }
+            }
+            if store.checkpoints.isEmpty { Text("Модели изображений не найдены") }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "photo")
+                Text(store.imageModelName(store.currentChat?.imageModel ?? ""))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: store.textSize(8), weight: .semibold))
+            }.font(.system(size: store.textSize(12), weight: .medium))
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(.primary.opacity(0.045), in: Capsule())
+        }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 360, alignment: .leading)
+            .help("Модель изображений этого чата")
     }
     private var thinkingBinding: Binding<Bool> {
         Binding(get: { store.preferences.thinking ?? false }, set: { enabled in

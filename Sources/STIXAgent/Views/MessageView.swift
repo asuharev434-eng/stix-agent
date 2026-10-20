@@ -1,6 +1,8 @@
 import SwiftUI
 import AppKit
 import QuickLook
+import RemoteChatCore
+import CoreImage.CIFilterBuiltins
 
 struct MessageView: View {
     @EnvironmentObject var store: AppStore
@@ -14,6 +16,7 @@ struct MessageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if message.role == "feature_workflows" { WorkflowsCard(chatID:chatID) }
+            else if message.role == "mobile_pairing" { MobilePairingCard(pairingID: message.detail ?? "", chatID: chatID) }
             else if message.role == "workflow_form", let id=UUID(uuidString:message.text) { WorkflowFormCard(workflowID:id,chatID:chatID) }
             else if message.role == "feature_automations" { AutomationsCard(chatID:chatID) }
             else if message.role == "feature_documents" { DocumentsCard() }
@@ -114,6 +117,46 @@ struct MessageView: View {
         guard let messages = store.chats.first(where: { $0.id == chatID })?.messages,
               let index = messages.firstIndex(where: { $0.id == message.id }) else { return nil }
         return messages.prefix(index).last(where: { $0.role == "user" })
+    }
+}
+
+private struct MobilePairingCard: View {
+    @EnvironmentObject var store: AppStore
+    let pairingID: String
+    let chatID: UUID
+
+    private var code: RemotePairingCode? {
+        guard let value = store.mobilePairing, value.pairingID.uuidString == pairingID,
+              value.expiresAt > .now else { return nil }
+        return value
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Подключить iPhone", systemImage: "iphone.gen3.radiowaves.left.and.right")
+                .font(.system(size: 16, weight: .semibold))
+            if let code, let image = qrImage(code) {
+                Image(nsImage: image).interpolation(.none).resizable().frame(width: 220, height: 220)
+                    .padding(12).background(.white, in: RoundedRectangle(cornerRadius: 16))
+                Text("Откройте STIX Agent на iPhone и наведите камеру на код. Код действует пять минут и подключает один телефон.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            } else {
+                Text("Код использован или истёк.").foregroundStyle(.secondary)
+                Button("Новый QR-код") { Task { await store.showMobilePairing(in: chatID) } }
+            }
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading).agentCard(cornerRadius: 22)
+    }
+
+    private func qrImage(_ code: RemotePairingCode) -> NSImage? {
+        guard let text = try? code.encoded() else { return nil }
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(text.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: 220, height: 220))
     }
 }
 

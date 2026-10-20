@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ApplicationServices
 import UniformTypeIdentifiers
+import RemoteChatCore
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -35,10 +36,12 @@ final class AppStore: ObservableObject {
     var transientReasoning = ""
     @Published var pending: PendingInteraction?
     @Published var error: String?
+    @Published var mobilePairing: RemotePairingCode?
     @Published var pluginTools: [String: [ToolDefinition]] = [:]
     let storage: StateStorage
     let vault = SecretVault()
     let processRunner = ProcessRunner()
+    lazy var remoteChat = RemoteChatService(store: self, root: storage.paths.root, vault: vault)
     lazy var computerTools = ComputerTools(captureDirectory: storage.paths.attachments)
     var plugins: [String: MCPClient] = [:]
     lazy var builtInTextEngine = LocalModelLibrary.live(paths: storage.paths)
@@ -436,6 +439,7 @@ final class AppStore: ObservableObject {
         }
         startNextJob()
         startFeatureMonitor()
+        remoteChat.start()
     }
     private func selectOfflineImageFallback(builtInImages: [ModelDescriptor], localImages: [ModelDescriptor]) {
         guard let fallback = localImages.first ?? builtInImages.first else {
