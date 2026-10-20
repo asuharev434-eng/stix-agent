@@ -273,6 +273,12 @@ extension AppStore {
         streamedText[messageID, default: ""] += token
         let visible = vault.redactStreaming(streamedText[messageID] ?? "")
         editMessage(messageID, chatID: chatID) { $0.text = visible }
+        if let chat = chats.first(where: { $0.id == chatID }), chat.isMobile == true,
+           visible.count >= 32,
+           Date().timeIntervalSince(streamedPersistedAt[messageID] ?? .distantPast) >= 10 {
+            streamedPersistedAt[messageID] = Date()
+            save()
+        }
     }
     func updateActivity(_ text: String) { updateTaskPhase(text) }
     func boundedHistory(_ history: [LMMessage]) -> [LMMessage] {

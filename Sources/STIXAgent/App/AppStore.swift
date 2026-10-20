@@ -60,6 +60,7 @@ final class AppStore: ObservableObject {
     var exposedToolNames: Set<String> = []
     var undos: [UUID: UndoRecord] = [:]
     var streamedText: [UUID: String] = [:]
+    var streamedPersistedAt: [UUID: Date] = [:]
     var undoing: Set<UUID> = []
     @Published var needsFeatureRelaunch = false
     @Published var featureNotice: String?
@@ -201,13 +202,22 @@ final class AppStore: ObservableObject {
         safe.text = vault.redact(safe.text)
         safe.detail = safe.detail.map(vault.redact)
         chats[i].messages.append(safe); chats[i].updatedAt = Date(); save()
-        if safe.role == "assistant", canPersist, chats[i].isMobile == true {
+        if safe.role == "assistant", safe.status != "running", canPersist, chats[i].isMobile == true {
             remoteChat.publishAssistantUpdate(chatID: id)
         }
     }
     func editMessage(_ messageID: UUID, chatID: UUID, _ edit: (inout ChatMessage) -> Void) {
         guard let i = index(chatID), let j = chats[i].messages.firstIndex(where: { $0.id == messageID }) else { return }
+        let previousStatus = chats[i].messages[j].status
         edit(&chats[i].messages[j])
+        let current = chats[i].messages[j]
+        if previousStatus == "running", current.role == "assistant",
+           ["done", "error", "interrupted"].contains(current.status ?? "") {
+            streamedPersistedAt.removeValue(forKey: messageID)
+            if chats[i].isMobile == true, canPersist {
+                remoteChat.publishAssistantUpdate(chatID: chatID)
+            }
+        }
     }
     func addFiles(_ urls: [URL]) {
         for url in urls {

@@ -167,6 +167,11 @@ final class RemoteChatStore: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if offlineMode { await sendLocally(text); return }
         guard !text.isEmpty || pendingUpload != nil, let code, !sending else { return }
+        if pendingUpload?.isImage == true,
+           snapshot?.models.first(where: { $0.selected })?.supportsImagePrompt == false {
+            error = "Выбранная модель принимает только короткий текст. Для анализа фото выберите другую текстовую модель MacBook; фото останется прикреплённым."
+            return
+        }
         let requestID: UUID
         if let pendingSend, pendingSend.text == text, pendingSend.uploadID == pendingUpload?.id { requestID = pendingSend.id }
         else { requestID = UUID() }

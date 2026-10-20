@@ -82,6 +82,24 @@ final class RemoteChatTests: XCTestCase {
         try? store.vault.remove("mobile." + code.pairingID.uuidString)
     }
 
+    @MainActor
+    func testMobileStreamingTextSurvivesUnexpectedRelaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("stix-mobile-stream-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = AppStoragePaths(root: root)
+        let store = AppStore(storage: StateStorage(paths: paths))
+        var chat = Chat(model: "builtin-text:test")
+        chat.isMobile = true
+        store.chats.insert(chat, at: 0)
+        store.save()
+        let message = ChatMessage(role: "assistant", text: "", status: "running")
+        store.addMessage(message, to: chat.id)
+        store.receiveToken(String(repeating: "Т", count: 40), messageID: message.id, chatID: chat.id)
+        let restored = try XCTUnwrap(StateStorage(paths: paths).load())
+        XCTAssertEqual(restored.chats.first(where: { $0.id == chat.id })?
+            .messages.first(where: { $0.id == message.id })?.text.count, 40)
+    }
+
     @MainActor private func exchange(_ request: RemoteRequest, with code: RemotePairingCode,
                           requestID: UUID = UUID()) async throws -> RemoteResponse {
         let connection = try await RemoteSocket.connect(host: "127.0.0.1", port: code.port)
