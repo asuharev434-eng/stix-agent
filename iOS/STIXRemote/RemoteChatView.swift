@@ -9,6 +9,7 @@ struct RemoteChatView: View {
     @State private var showModelImporter = false
     @State private var showImageModelImporter = false
     @State private var showAttachmentImporter = false
+    @State private var showPhotoPicker = false
     @State private var selectedPhoto: PhotosPickerItem?
     @FocusState private var composerFocused: Bool
 
@@ -162,6 +163,7 @@ struct RemoteChatView: View {
                 if case .success(let url) = result { Task { await store.attachFile(url) } }
                 else if case .failure(let error) = result { store.error = error.localizedDescription }
             }
+            .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhoto, matching: .images)
             .onChange(of: selectedPhoto) { _, item in
                 if let item { Task { await store.attachPhoto(item); selectedPhoto = nil } }
             }
@@ -255,9 +257,7 @@ struct RemoteChatView: View {
             HStack(alignment: .bottom, spacing: 10) {
                 Menu {
                     Button("Файл…", systemImage: "doc") { showAttachmentImporter = true }
-                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                        Label("Фото…", systemImage: "photo")
-                    }
+                    Button("Фото…", systemImage: "photo") { showPhotoPicker = true }
                 } label: {
                     Image(systemName: "plus").font(.system(size: 20))
                         .frame(width: 38, height: 42)

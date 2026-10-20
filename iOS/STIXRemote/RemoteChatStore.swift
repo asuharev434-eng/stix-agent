@@ -46,6 +46,7 @@ final class RemoteChatStore: ObservableObject {
     private var localImageGeneration: LocalImageGeneration?
     private var localImagePaths: [UUID: String] = [:]
     private var subscribedToCloud = false
+    private var lastRemoteAssistantID: UUID?
     var selectedLocalModel: LocalModelChoice? {
         localModels.first(where: { $0.id == selectedLocalModelID }) ?? localModels.first
     }
@@ -64,6 +65,7 @@ final class RemoteChatStore: ObservableObject {
         localImageModels = LocalImageModelLibrary.available()
         selectedLocalImageModelID = saved.selectedImageModelID
         localImagePaths = saved.imagePaths ?? [:]
+        lastRemoteAssistantID = saved.lastRemoteAssistantID
         let recentImageIDs = Set(saved.messages.suffix(24).flatMap { $0.attachments.map(\.id) })
         for (id, path) in localImagePaths where recentImageIDs.contains(id) {
             if let data = try? Data(contentsOf: URL(fileURLWithPath: path)), let image = UIImage(data: data) {
@@ -111,6 +113,7 @@ final class RemoteChatStore: ObservableObject {
             guard let snapshot = response.snapshot else { throw RemoteChatError.invalidFrame }
             try RemoteKeychain.save(JSONEncoder().encode(code))
             self.code = code; self.snapshot = snapshot; isPaired = true; connected = true; error = nil
+            lastRemoteAssistantID = snapshot.messages.last(where: { $0.role == "assistant" })?.id
             offlineMode = false; persistLocalState()
             await start()
         } catch { self.error = error.localizedDescription }
@@ -119,7 +122,7 @@ final class RemoteChatStore: ObservableObject {
     func refresh() async {
         guard !offlineMode, let code else { return }
         do {
-            let known = Set(snapshot?.messages.map(\.id) ?? [])
+            let knownAssistantID = lastRemoteAssistantID
             let response = try await perform(.init(operation: "snapshot"), with: code)
             if let error = response.error {
                 throw NSError(domain: "STIXRemote", code: 8,
@@ -127,14 +130,19 @@ final class RemoteChatStore: ObservableObject {
             }
             guard let snapshot = response.snapshot else { throw RemoteChatError.invalidFrame }
             self.snapshot = snapshot; loadImages(in: snapshot)
-            if !known.isEmpty, UIApplication.shared.applicationState != .active,
-               let latest = snapshot.messages.last(where: { $0.role == "assistant" && !known.contains($0.id) }) {
+            let latest = snapshot.messages.last(where: { $0.role == "assistant" })
+            if let knownAssistantID, knownAssistantID != latest?.id,
+               UIApplication.shared.applicationState != .active, let latest {
                 let content = UNMutableNotificationContent()
                 content.title = "STIX Agent · MacBook"
                 content.body = String(latest.text.prefix(180))
                 content.sound = .default
                 try? await UNUserNotificationCenter.current().add(
                     UNNotificationRequest(identifier: latest.id.uuidString, content: content, trigger: nil))
+            }
+            if lastRemoteAssistantID != latest?.id {
+                lastRemoteAssistantID = latest?.id
+                persistLocalState()
             }
             connected = true; error = nil
         } catch { connected = false; self.error = "Mac недоступен: \(error.localizedDescription)" }
@@ -171,7 +179,11 @@ final class RemoteChatStore: ObservableObject {
                                                    uploadData: pendingUpload?.data), with: code, requestID: requestID)
             if let error = response.error { throw NSError(domain: "STIXRemote", code: 1, userInfo: [NSLocalizedDescriptionKey: error]) }
             draft = ""; pendingUpload = nil; pendingSend = nil
-            if let snapshot = response.snapshot { self.snapshot = snapshot; loadImages(in: snapshot) }
+            if let snapshot = response.snapshot {
+                self.snapshot = snapshot; loadImages(in: snapshot)
+                lastRemoteAssistantID = snapshot.messages.last(where: { $0.role == "assistant" })?.id
+                persistLocalState()
+            }
             connected = true; error = nil
         } catch { self.error = "Не удалось отправить: \(error.localizedDescription)" }
     }
@@ -396,6 +408,7 @@ final class RemoteChatStore: ObservableObject {
         RemoteKeychain.remove(); code = nil; snapshot = nil; images = [:]
         imageData = [:]
         pendingSend = nil
+        lastRemoteAssistantID = nil; persistLocalState()
         isPaired = false; connected = false; error = nil
     }
 
@@ -404,7 +417,8 @@ final class RemoteChatStore: ObservableObject {
             try LocalMobileState(offlineMode: offlineMode, messages: localMessages,
                                  selectedModelID: selectedLocalModelID,
                                  selectedImageModelID: selectedLocalImageModelID,
-                                 imagePaths: localImagePaths).save()
+                                 imagePaths: localImagePaths,
+                                 lastRemoteAssistantID: lastRemoteAssistantID).save()
         } catch { self.error = "Не удалось сохранить локальную историю: \(error.localizedDescription)" }
     }
 
@@ -503,6 +517,7 @@ private struct LocalMobileState: Codable {
     var selectedModelID: String?
     var selectedImageModelID: String?
     var imagePaths: [UUID: String]?
+    var lastRemoteAssistantID: UUID?
 
     private static var url: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
