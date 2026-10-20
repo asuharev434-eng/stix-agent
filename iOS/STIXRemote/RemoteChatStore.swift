@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import Security
 import Network
+import Photos
 
 @MainActor
 final class RemoteChatStore: ObservableObject {
@@ -12,6 +13,7 @@ final class RemoteChatStore: ObservableObject {
     @Published var draft = ""
     @Published private(set) var sending = false
     @Published private(set) var images: [UUID: UIImage] = [:]
+    private var imageData: [UUID: Data] = [:]
     private var code: RemotePairingCode?
     private var polling: Task<Void, Never>?
     private var imageLoads: Set<UUID> = []
@@ -108,8 +110,25 @@ final class RemoteChatStore: ObservableObject {
     func disconnect() {
         polling?.cancel(); polling = nil
         RemoteKeychain.remove(); code = nil; snapshot = nil; images = [:]
+        imageData = [:]
         pendingSend = nil
         isPaired = false; connected = false; error = nil
+    }
+
+    func saveImage(_ attachmentID: UUID) async throws {
+        guard let data = imageData[attachmentID] else {
+            throw NSError(domain: "STIXRemote", code: 6, userInfo: [NSLocalizedDescriptionKey:
+                "Изображение ещё загружается. Попробуйте снова через несколько секунд."])
+        }
+        let authorization = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard authorization == .authorized else {
+            throw NSError(domain: "STIXRemote", code: 7, userInfo: [NSLocalizedDescriptionKey:
+                "Разрешите STIX Agent добавлять фотографии в Настройках iPhone."])
+        }
+        try await PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCreationRequest.forAsset()
+            request.addResource(with: .photo, data: data, options: nil)
+        }
     }
 
     private func loadImages(in snapshot: RemoteSnapshot) {
@@ -123,6 +142,7 @@ final class RemoteChatStore: ObservableObject {
                     guard let response = try? await self.perform(.init(operation: "attachment", messageID: message.id,
                                                                        attachmentID: attachment.id), with: code),
                           let data = response.fileData, let image = UIImage(data: data) else { return }
+                    self.imageData[attachment.id] = data
                     self.images[attachment.id] = image
                 }
             }

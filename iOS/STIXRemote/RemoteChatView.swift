@@ -3,6 +3,7 @@ import SwiftUI
 struct RemoteChatView: View {
     @EnvironmentObject private var store: RemoteChatStore
     @State private var showCommands = false
+    @State private var imageSaveAlert: String?
     @FocusState private var composerFocused: Bool
 
     private var commandMatches: [RemoteCommand] {
@@ -97,6 +98,14 @@ struct RemoteChatView: View {
                     } label: { Image(systemName: "ellipsis.circle") }
                 }
             }
+            .alert("Сохранение изображения", isPresented: Binding(
+                get: { imageSaveAlert != nil },
+                set: { if !$0 { imageSaveAlert = nil } }
+            )) {
+                Button("Понятно", role: .cancel) { imageSaveAlert = nil }
+            } message: {
+                Text(imageSaveAlert ?? "")
+            }
         }
     }
 
@@ -188,8 +197,22 @@ struct RemoteChatView: View {
             }
             ForEach(message.attachments) { attachment in
                 if let image = store.images[attachment.id] {
-                    Image(uiImage: image).resizable().scaledToFit()
-                        .frame(maxWidth: 340, maxHeight: 360).clipShape(RoundedRectangle(cornerRadius: 16))
+                    VStack(alignment: .leading, spacing: 8) {
+                        Image(uiImage: image).resizable().scaledToFit()
+                            .frame(maxWidth: 340, maxHeight: 360).clipShape(RoundedRectangle(cornerRadius: 16))
+                        Button {
+                            Task {
+                                do {
+                                    try await store.saveImage(attachment.id)
+                                    imageSaveAlert = "Изображение добавлено в приложение «Фото»."
+                                } catch {
+                                    imageSaveAlert = error.localizedDescription
+                                }
+                            }
+                        } label: {
+                            Label("Сохранить в Фото", systemImage: "square.and.arrow.down")
+                        }.buttonStyle(.bordered)
+                    }
                 } else {
                     Label(attachment.name, systemImage: attachment.kind == "image" ? "photo" : "doc")
                         .font(.caption).foregroundStyle(.secondary)

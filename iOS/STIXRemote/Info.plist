@@ -12,6 +12,7 @@
     <key>CFBundleVersion</key><string>1</string>
     <key>LSRequiresIPhoneOS</key><true/>
     <key>NSCameraUsageDescription</key><string>Камера нужна для сканирования QR-кода сопряжения с вашим Mac.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key><string>Сохранение сгенерированных изображений в приложение «Фото» по вашему запросу.</string>
     <key>NSLocalNetworkUsageDescription</key><string>Подключение к STIX Agent на Mac в вашей локальной сети.</string>
     <key>NSBonjourServices</key><array><string>_stixagent._tcp</string></array>
     <key>UILaunchScreen</key><dict/>
