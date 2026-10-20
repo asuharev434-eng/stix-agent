@@ -19,6 +19,7 @@ final class RemoteChatStore: ObservableObject {
     @Published private(set) var isPaired = false
     @Published private(set) var snapshot: RemoteSnapshot?
     @Published private(set) var connected = false
+    @Published private(set) var checkingConnection = false
     @Published private(set) var offlineMode = false
     @Published private(set) var localMessages: [RemoteMessage] = []
     @Published private(set) var localWorking = false
@@ -120,7 +121,9 @@ final class RemoteChatStore: ObservableObject {
     }
 
     func refresh() async {
-        guard !offlineMode, let code else { return }
+        guard !offlineMode, let code, !checkingConnection else { return }
+        checkingConnection = true
+        defer { checkingConnection = false }
         do {
             let knownAssistantID = lastRemoteAssistantID
             let response = try await perform(.init(operation: "snapshot"), with: code)
@@ -159,7 +162,7 @@ final class RemoteChatStore: ObservableObject {
             offlineMode = false; persistLocalState()
             return
         }
-        offlineMode = false; persistLocalState()
+        offlineMode = false; connected = false; persistLocalState()
         await start()
     }
 
@@ -414,7 +417,7 @@ final class RemoteChatStore: ObservableObject {
         imageData = [:]
         pendingSend = nil
         lastRemoteAssistantID = nil; persistLocalState()
-        isPaired = false; connected = false; error = nil
+        isPaired = false; connected = false; checkingConnection = false; error = nil
     }
 
     private func persistLocalState() {

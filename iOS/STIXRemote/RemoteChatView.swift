@@ -4,6 +4,7 @@ import PhotosUI
 
 struct RemoteChatView: View {
     @EnvironmentObject private var store: RemoteChatStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showCommands = false
     @State private var imageSaveAlert: String?
     @State private var showModelImporter = false
@@ -38,12 +39,8 @@ struct RemoteChatView: View {
                         Text("Локально на iPhone · \(store.selectedLocalModel?.name ?? LocalLlamaEngine.modelName)")
                         Spacer()
                     }.font(.caption).padding(12).background(.blue.opacity(0.08))
-                } else if !store.connected {
-                    Button {
-                        store.useOfflineMode()
-                    } label: {
-                        Label("Mac не в сети · работать на iPhone", systemImage: "iphone")
-                    }.font(.caption).padding(12).frame(maxWidth: .infinity)
+                } else {
+                    macConnectionStatus
                 }
                 if let error = store.error {
                     HStack(spacing: 8) {
@@ -167,7 +164,34 @@ struct RemoteChatView: View {
             .onChange(of: selectedPhoto) { _, item in
                 if let item { Task { await store.attachPhoto(item); selectedPhoto = nil } }
             }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active && !store.offlineMode { Task { await store.refresh() } }
+            }
         }
+    }
+
+    private var macConnectionStatus: some View {
+        let available = store.connected && !store.checkingConnection
+        let retryingAfterFailure = store.error?.hasPrefix("Mac недоступен:") == true
+        let checking = store.checkingConnection && !retryingAfterFailure
+        return HStack(spacing: 8) {
+            Image(systemName: checking ? "arrow.triangle.2.circlepath" :
+                  available ? "checkmark.circle.fill" : "wifi.slash")
+            Text(checking ? "Проверяю подключение MacBook…" :
+                 available ? "MacBook подключён" :
+                 store.isPaired ? "MacBook недоступен" : "MacBook не подключён")
+            Spacer()
+            if !available && !store.checkingConnection && store.isPaired {
+                Button("Повторить") { Task { await store.refresh() } }
+            }
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(available ? .green : checking ? .secondary : .orange)
+        .padding(.horizontal, 16).padding(.vertical, 9)
+        .frame(maxWidth: .infinity)
+        .background(available ? Color.green.opacity(0.08) :
+                    checking ? Color.secondary.opacity(0.08) : Color.orange.opacity(0.1))
+        .accessibilityElement(children: .combine)
     }
 
     private var deviceSelector: some View {
