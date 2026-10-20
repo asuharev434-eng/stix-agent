@@ -56,7 +56,7 @@ struct ModelSettingsCard: View {
                     Text("\(selected) · недоступна").tag(selected)
                 }
                 ForEach(store.preferences.imageProfiles) { profile in Text(profile.name).tag("workflow:" + profile.id) }
-                ForEach(store.checkpoints, id: \.self) { Text($0.hasPrefix("builtin-image:") ? "Stable Diffusion 1.5 · встроенная" : $0).tag($0) }
+                ForEach(store.checkpoints, id: \.self) { Text(store.imageModelName($0)).tag($0) }
             } label: { Label("Генерация и правки", systemImage: "photo").frame(width: 185, alignment: .leading) }
             Text("Для правок используются выбранная модель изображений, исходная картинка и при необходимости маска. Терминал, приложения, браузер и очередь — инструменты основной модели.")
                 .font(.caption).foregroundStyle(.secondary)

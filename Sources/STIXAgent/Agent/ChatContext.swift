@@ -7,6 +7,13 @@ extension AppStore {
     func contextWindow(chatID: UUID, includeDraft: Bool = false) -> ContextWindow? {
         guard let i = index(chatID) else { return nil }
         let chat = chats[i]
+        if let descriptor = models.first(where: { $0.id == chat.model }), TinyTextPolicy.applies(descriptor) {
+            let text = includeDraft && selectedID == chatID ? draft : chat.history.last(where: { $0.role == "user" })?.content ?? ""
+            let used = text.isEmpty ? 0 : text.unicodeScalars.count + 17
+            return ContextWindow(limit: descriptor.contextLimit ?? 128, knownLimit: true,
+                                 systemTokens: 0, toolTokens: 0, historyTokens: used,
+                                 reserveTokens: min(80, max(0, (descriptor.contextLimit ?? 128) - used)))
+        }
         var history = ContextCompaction.effective(history: chat.history, checkpoint: chat.contextCheckpoint)
         if includeDraft && selectedID == chatID && (!draft.isEmpty || !attachments.isEmpty) {
             history.append(.init(role: "user", content: draft, imageURLs: attachments.filter { $0.kind == "image" }.map(\.path)))

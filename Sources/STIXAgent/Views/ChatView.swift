@@ -49,7 +49,10 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 HStack {
                     Text(store.currentChat?.title ?? "Новый чат").font(.system(size: store.textSize(13), weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
-                    if store.currentChat?.isClean == true {
+                    if let descriptor = store.models.first(where: { $0.id == store.currentChat?.model }), TinyTextPolicy.applies(descriptor) {
+                        Label("Учебная · короткие вопросы · без памяти и инструментов", systemImage: "text.bubble")
+                            .font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
+                    } else if store.currentChat?.isClean == true {
                         Label("Без инструкций и памяти", systemImage: "circle.dotted")
                             .font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
                     }

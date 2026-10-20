@@ -24,4 +24,18 @@ final class BuiltInToolExposureTests: XCTestCase {
         XCTAssertTrue(tools.contains { $0.name == "discover_tools" })
         XCTAssertLessThanOrEqual(tools.count, 7)
     }
+
+    @MainActor func testExplicitToolNameHasPriorityInSmallContext() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AppStore(storage: .init(paths: .init(root: root)))
+        let id = try XCTUnwrap(store.selectedID)
+        store.setModel("builtin-text:qwen3-4b-q4_k_m", image: false)
+        for name in ["list_tasks", "delegate_model", "manage_memory"] {
+            let tools = store.toolsForRequest(chatID: id, system: store.systemPrompt(chatID: id),
+                                              currentRequest: "Используй \(name) для этой задачи")
+            XCTAssertEqual(tools.first?.name, name)
+            XCTAssertLessThanOrEqual(tools.count, 7)
+        }
+    }
 }

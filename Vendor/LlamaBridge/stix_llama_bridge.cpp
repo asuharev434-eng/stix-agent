@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -57,7 +58,26 @@ std::string format_messages(Session & session, const char * messages_json) {
     }
     const char * chat_template = llama_model_chat_template(session.model, nullptr);
     if (!chat_template) throw std::runtime_error("GGUF model has no supported chat template");
+    char stix_format[32] = {};
+    llama_model_meta_val_str(session.model, "stix.chat_format", stix_format, sizeof(stix_format));
+    if (std::strcmp(stix_format, "ru-char-v1") == 0) {
+        if (roles.size() != 1 || roles[0] != "user") {
+            throw std::runtime_error("STIX-AI requires one short user question without history or tools");
+        }
+        return "<|startoftext|>Вопрос: " + contents[0] + "\nОтвет: ";
+    }
     int32_t needed = llama_chat_apply_template(chat_template, messages.data(), messages.size(), true, nullptr, 0);
+    // The legacy C template formatter cannot parse Gemma 4's full Jinja template.
+    // Its Gemma turn markers still provide a usable plain-text fallback. Tool and
+    // vision support for this model require the full formatter and mtmd runtime.
+    if (needed <= 0) {
+        char architecture[32] = {};
+        llama_model_meta_val_str(session.model, "general.architecture", architecture, sizeof(architecture));
+        if (std::strcmp(architecture, "gemma4") == 0) {
+            chat_template = "gemma";
+            needed = llama_chat_apply_template(chat_template, messages.data(), messages.size(), true, nullptr, 0);
+        }
+    }
     if (needed <= 0 || needed > 8'000'000) throw std::runtime_error("Unsupported or oversized chat template");
     std::string prompt(static_cast<size_t>(needed) + 1, '\0');
     const int32_t written = llama_chat_apply_template(chat_template, messages.data(), messages.size(), true,
@@ -70,12 +90,16 @@ std::string format_messages(Session & session, const char * messages_json) {
 
 extern "C" void * stix_llama_load(const char * path, uint32_t context_length, char * error, size_t error_length) {
     try {
-        if (!path || context_length < 512 || context_length > 131072) throw std::runtime_error("Invalid model path or context limit");
+        if (!path || context_length < 128 || context_length > 131072) throw std::runtime_error("Invalid model path or context limit");
         static std::once_flag backend_once;
         std::call_once(backend_once, [] { llama_backend_init(); });
         auto session = std::make_unique<Session>();
         auto model_params = llama_model_default_params();
-        model_params.n_gpu_layers = 99;
+        std::error_code file_error;
+        const auto model_bytes = std::filesystem::file_size(path, file_error);
+        // Large MoE checkpoints exceed the shared GPU budget on 24 GB Macs.
+        // CPU-only execution avoids a second resident Metal allocation.
+        model_params.n_gpu_layers = !file_error && model_bytes > 12ULL * 1024 * 1024 * 1024 ? 0 : 99;
         session->model = llama_model_load_from_file(path, model_params);
         if (!session->model) throw std::runtime_error("Failed to load GGUF model");
         auto context_params = llama_context_default_params();
@@ -98,11 +122,12 @@ extern "C" uint32_t stix_llama_context_length(void * handle) {
     return llama_n_ctx(static_cast<Session *>(handle)->context);
 }
 
-extern "C" int stix_llama_generate(void * handle, const char * messages_json, uint32_t max_tokens,
+extern "C" int stix_llama_generate(void * handle, const char * messages_json, uint32_t max_tokens, float temperature,
                                    stix_llama_piece_callback callback, void * user_data,
                                    char * error, size_t error_length) {
     try {
-        if (!handle || !messages_json || !callback || max_tokens == 0 || max_tokens > 32768) {
+        if (!handle || !messages_json || !callback || max_tokens == 0 || max_tokens > 32768 ||
+            temperature < 0.0f || temperature > 2.0f) {
             throw std::runtime_error("Invalid generation request");
         }
         auto & session = *static_cast<Session *>(handle);
@@ -128,7 +153,7 @@ extern "C" int stix_llama_generate(void * handle, const char * messages_json, ui
         auto * sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
         if (!sampler) throw std::runtime_error("Could not initialize sampler");
         llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.9f, 1));
-        llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
+        llama_sampler_chain_add(sampler, llama_sampler_init_temp(temperature));
         llama_sampler_chain_add(sampler, llama_sampler_init_dist(12345));
         int produced = 0;
         try {

@@ -27,15 +27,21 @@ def main() -> None:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--bridge", type=Path, required=True)
     parser.add_argument("--context", type=int, default=8192)
+    parser.add_argument("--case", dest="case_id", default=None)
+    parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     fixtures = Path(__file__).resolve().parents[1] / "Tests/STIXAgentTests/Fixtures/inference-quality.json"
     cases = json.loads(fixtures.read_text(encoding="utf-8"))["textCases"]
+    if args.case_id:
+        cases = [case for case in cases if case["id"] == args.case_id]
+        if not cases:
+            parser.error("unknown case")
     library = ctypes.CDLL(str(args.bridge.resolve()))
     library.stix_llama_load.argtypes = [ctypes.c_char_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_size_t]
     library.stix_llama_load.restype = ctypes.c_void_p
     callback_type = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p)
-    library.stix_llama_generate.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32,
+    library.stix_llama_generate.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_float,
                                            callback_type, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
     library.stix_llama_generate.restype = ctypes.c_int
     library.stix_llama_unload.argtypes = [ctypes.c_void_p]
@@ -78,7 +84,7 @@ def main() -> None:
                 return 1
 
             error.value = b""
-            generated = library.stix_llama_generate(handle, wire, 256, callback_type(receive),
+            generated = library.stix_llama_generate(handle, wire, args.max_tokens, 0.1 if case.get("expectedTool") else 0.7, callback_type(receive),
                                                      None, error, len(error))
             text = b"".join(chunks).decode("utf-8", errors="replace")
             results.append({"id": case["id"], "seconds": round(time.monotonic() - started, 3),

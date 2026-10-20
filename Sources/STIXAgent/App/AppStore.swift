@@ -17,6 +17,8 @@ final class AppStore: ObservableObject {
     @Published var projects: [MemoryProject] = []
     @Published var models: [ModelDescriptor] = []
     @Published var importedModels: [ImportedGGUF] = []
+    @Published var importedMLXModels: [ImportedMLXModel] = []
+    @Published var importedImageModels: [ImportedImageCheckpoint] = []
     @Published var skills: [LocalSkill] = []
     @Published var focusedMessageID: UUID?
     @Published var checkpoints: [String] = []
@@ -40,10 +42,13 @@ final class AppStore: ObservableObject {
     lazy var computerTools = ComputerTools(captureDirectory: storage.paths.attachments)
     var plugins: [String: MCPClient] = [:]
     lazy var builtInTextEngine = LocalModelLibrary.live(paths: storage.paths)
+    lazy var localMLXEngine = LocalMLXTextEngine.bundled(paths: storage.paths)
     lazy var builtInImageEngine = CoreMLImageEngine.bundled()
+    lazy var localImageEngine = LocalCheckpointImageEngine.bundled(paths: storage.paths)
     var inferenceRegistry: InferenceRegistry {
         InferenceRegistry(lmEndpoint: preferences.lmEndpoint, comfyEndpoint: preferences.comfyEndpoint,
-                          builtInText: builtInTextEngine, builtInImage: builtInImageEngine)
+                          builtInText: builtInTextEngine, builtInImage: builtInImageEngine,
+                          localCheckpoint: localImageEngine, localMLX: localMLXEngine)
     }
     var activeChatID: UUID?
     var task: Task<Void, Never>?
@@ -136,6 +141,57 @@ final class AppStore: ObservableObject {
         else { chats[i].model = model; preferences.defaultModel = model }
         save()
     }
+    func imageModelName(_ id: String) -> String {
+        if id.hasPrefix("builtin-image:") { return "Stable Diffusion 1.5 · встроенная" }
+        if id.hasPrefix("local-image:") {
+            return importedImageModels.first(where: { "local-image:" + $0.id == id })
+                .map { $0.name + " · локальная" } ?? "Локальная модель недоступна"
+        }
+        return URL(fileURLWithPath: id).deletingPathExtension().lastPathComponent + " · ComfyUI"
+    }
+    private func externalImageChoices(_ choices: [String]) -> [String] {
+        let importedNames = Set(importedImageModels.map { $0.name + ".safetensors" })
+        return choices.filter { !importedNames.contains($0) }
+    }
+    func migrateInstalledModelSelections() {
+        func textID(_ old: String) -> String? {
+            guard !old.hasPrefix("builtin-text:"), !old.hasPrefix("mlx-text:") else { return nil }
+            func normalized(_ value: String) -> String { value.lowercased().filter { $0.isLetter || $0.isNumber } }
+            let name = normalized(old)
+            if name.contains("qwen359b"), let model = importedMLXModels.first(where: { normalized($0.name).contains("qwen359b") }) {
+                return "mlx-text:" + model.id
+            }
+            if name.contains("gptoss20b"), let model = importedMLXModels.first(where: { normalized($0.name).contains("gptoss20b") }) {
+                return "mlx-text:" + model.id
+            }
+            if name.contains("qwen3coder30b"), let model = importedModels.first(where: { normalized($0.name).contains("qwen3coder30b") }) {
+                return "builtin-text:" + model.id
+            }
+            if name.contains("qwen38babliterated"), let model = importedModels.first(where: { normalized($0.name).contains("qwen38babliterated") }) {
+                return "builtin-text:" + model.id
+            }
+            if name.contains("gemma412b"), let model = importedModels.first(where: { normalized($0.name).contains("gemma412b") }) {
+                return "builtin-text:" + model.id
+            }
+            return nil
+        }
+        func imageID(_ old: String) -> String? {
+            guard !old.hasPrefix("local-image:"), !old.hasPrefix("builtin-image:"), !old.hasPrefix("workflow:") else { return nil }
+            let name = URL(fileURLWithPath: old).deletingPathExtension().lastPathComponent
+            return importedImageModels.first(where: { $0.name == name }).map { "local-image:" + $0.id }
+        }
+        if let migrated = textID(preferences.defaultModel) { preferences.defaultModel = migrated }
+        if let old = preferences.defaultImageModel, let migrated = imageID(old) { preferences.defaultImageModel = migrated }
+        if var roles = preferences.modelRoles {
+            for (role, old) in roles { if let migrated = textID(old) { roles[role] = migrated } }
+            preferences.modelRoles = roles
+        }
+        for index in chats.indices {
+            if let migrated = textID(chats[index].model) { chats[index].model = migrated }
+            if let old = chats[index].imagePromptModel, let migrated = textID(old) { chats[index].imagePromptModel = migrated }
+            if let migrated = imageID(chats[index].imageModel) { chats[index].imageModel = migrated }
+        }
+    }
     func addMessage(_ message: ChatMessage, to id: UUID) {
         guard let i = index(id) else { return }
         var safe = message
@@ -179,6 +235,79 @@ final class AppStore: ObservableObject {
             } catch { self.error = "Импорт модели: \(error.localizedDescription)" }
         }
     }
+    func importMLXModel() {
+        guard let localMLXEngine else { error = "Локальный MLX-движок отсутствует в этой сборке"; return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Добавить MLX-модель"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                let record = try await localMLXEngine.importDirectory(url)
+                await refreshServices()
+                setModel("mlx-text:" + record.id, image: false)
+                if let chatID = selectedID {
+                    addMessage(.init(role: "assistant", text: "Добавлена модель \(record.name). Её файлы находятся в хранилище STIX Agent; LM Studio для запуска не нужен."), to: chatID)
+                }
+            } catch { self.error = "Импорт MLX-модели: \(error.localizedDescription)" }
+        }
+    }
+    func removeImportedMLXModel(_ record: ImportedMLXModel) {
+        let storedID = "mlx-text:" + record.id
+        guard preferences.defaultModel != storedID,
+              !chats.contains(where: { $0.model == storedID || $0.imagePromptModel == storedID }),
+              !(preferences.modelRoles?.values.contains(storedID) ?? false) else {
+            error = "Сначала переключите чаты и назначения с этой модели."; return
+        }
+        Task {
+            do { try await localMLXEngine?.remove(record.id); await refreshServices() }
+            catch { self.error = "Удаление MLX-модели: \(error.localizedDescription)" }
+        }
+    }
+    func importImageModel() {
+        guard let localImageEngine else { error = "Локальный движок изображений отсутствует в этой сборке"; return }
+        let panel = NSOpenPanel()
+        if let type = UTType(filenameExtension: "safetensors") { panel.allowedContentTypes = [type] }
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Добавить модель"
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let sources = panel.urls
+        Task {
+            do {
+                var names: [String] = []
+                var selected: String?
+                for url in sources {
+                    let record = try await localImageEngine.importFile(url)
+                    let modelID = "local-image:" + record.id
+                    for index in chats.indices where chats[index].imageModel == url.lastPathComponent {
+                        chats[index].imageModel = modelID
+                    }
+                    if preferences.defaultImageModel == url.lastPathComponent { preferences.defaultImageModel = modelID }
+                    names.append(record.name)
+                    selected = modelID
+                }
+                await refreshServices()
+                if let selected { setModel(selected, image: true) }
+                if let chatID = selectedID {
+                    addMessage(.init(role: "assistant", text: "Добавлены локальные модели: \(names.joined(separator: ", ")). Checkpoint-файлы скопированы в хранилище STIX и запускаются без ComfyUI."), to: chatID)
+                }
+            } catch { await refreshServices(); self.error = "Импорт изображения: \(error.localizedDescription)" }
+        }
+    }
+    func removeImportedImageModel(_ record: ImportedImageCheckpoint) {
+        let modelID = "local-image:" + record.id
+        guard preferences.defaultImageModel != modelID,
+              !chats.contains(where: { $0.imageModel == modelID }) else {
+            error = "Сначала переключите чаты с этой модели, затем удалите её копию."; return
+        }
+        Task {
+            do { try await localImageEngine?.remove(record.id); await refreshServices() }
+            catch { self.error = "Удаление модели изображения: \(error.localizedDescription)" }
+        }
+    }
     func removeImportedTextModel(_ record: ImportedGGUF) {
         let storedID = "builtin-text:" + record.id
         guard preferences.defaultModel != storedID,
@@ -196,21 +325,28 @@ final class AppStore: ObservableObject {
         do { builtInModels = try await builtInTextEngine.models() }
         catch { self.error = error.localizedDescription; builtInModels = [] }
         importedModels = (try? await builtInTextEngine.importedModels()) ?? []
+        let mlxModels = (try? await localMLXEngine?.models()) ?? []
+        importedMLXModels = (try? await localMLXEngine?.importedModels()) ?? []
         let builtInImages: [ModelDescriptor]
         do { builtInImages = try await builtInImageEngine?.models() ?? [] }
         catch { self.error = error.localizedDescription; builtInImages = [] }
+        let localImages = (try? await localImageEngine?.models()) ?? []
+        importedImageModels = (try? await localImageEngine?.importedModels()) ?? []
+        migrateInstalledModelSelections()
         async let modelResult: Result<[ModelDescriptor], Error> = capture { try await self.inferenceRegistry.externalText.models() }
         async let imageResult: Result<[String], Error> = capture { try await self.inferenceRegistry.externalImage.models().map(\.id) }
         let (m, c) = await (modelResult, imageResult)
         if case .success(let list) = m {
-            models = builtInModels + list
+            models = builtInModels + mlxModels + list
         }
-        else { models = builtInModels }
+        else { models = builtInModels + mlxModels }
         if preferences.defaultModel.isEmpty, let model = models.first {
             preferences.defaultModel = model.id
             if let id = selectedID, let i = index(id), chats[i].model.isEmpty { chats[i].model = model.id }
         }
-        checkpoints = builtInImages.map(\.id) + ((try? c.get()) ?? [])
+        checkpoints = LocalServices.mergedImageCheckpoints([builtInImages.map(\.id), localImages.map(\.id),
+                                                            externalImageChoices(LocalServices.installedImageCheckpoints()),
+                                                            externalImageChoices((try? c.get()) ?? [])])
         save()
     }
     func boot() async {
@@ -221,11 +357,17 @@ final class AppStore: ObservableObject {
         do { builtInModels = try await builtInTextEngine.models() }
         catch { self.error = "Встроенная модель: \(error.localizedDescription)"; builtInModels = [] }
         importedModels = (try? await builtInTextEngine.importedModels()) ?? []
-        models = builtInModels
+        let mlxModels = (try? await localMLXEngine?.models()) ?? []
+        importedMLXModels = (try? await localMLXEngine?.importedModels()) ?? []
+        models = builtInModels + mlxModels
         let builtInImages: [ModelDescriptor]
         do { builtInImages = try await builtInImageEngine?.models() ?? [] }
         catch { self.error = "Встроенная модель изображений: \(error.localizedDescription)"; builtInImages = [] }
-        checkpoints = builtInImages.map(\.id)
+        let localImages = (try? await localImageEngine?.models()) ?? []
+        importedImageModels = (try? await localImageEngine?.importedModels()) ?? []
+        migrateInstalledModelSelections()
+        checkpoints = LocalServices.mergedImageCheckpoints([builtInImages.map(\.id), localImages.map(\.id),
+                                                            externalImageChoices(LocalServices.installedImageCheckpoints())])
         if preferences.defaultImageModel == nil, let first = builtInImages.first {
             preferences.defaultImageModel = first.id
             if let id = selectedID, let i = index(id), chats[i].messages.isEmpty,
@@ -235,9 +377,12 @@ final class AppStore: ObservableObject {
         if let id = selectedID, let i = index(id), chats[i].model.isEmpty { chats[i].model = preferences.defaultModel }
         let selectedText = currentChat?.model ?? preferences.defaultModel
         let selectedPrompt = currentChat?.imagePromptModel ?? selectedText
-        let requiresExternalText = builtInModels.isEmpty || [selectedText, selectedPrompt].contains(where: { !$0.isEmpty && !$0.hasPrefix("builtin-text:") })
+        let requiresExternalText = builtInModels.isEmpty && mlxModels.isEmpty || [selectedText, selectedPrompt].contains(where: {
+            !$0.isEmpty && !$0.hasPrefix("builtin-text:") && !$0.hasPrefix("mlx-text:")
+        })
         let selectedImage = currentChat?.imageModel ?? preferences.defaultImageModel ?? ""
-        let requiresComfy = builtInImages.isEmpty || (!selectedImage.isEmpty && !selectedImage.hasPrefix("builtin-image:"))
+        let requiresComfy = builtInImages.isEmpty && localImages.isEmpty ||
+            (!selectedImage.isEmpty && !selectedImage.hasPrefix("builtin-image:") && !selectedImage.hasPrefix("local-image:"))
         async let comfyResult: Result<Bool, Error> = capture {
             requiresComfy ? try await LocalServices.ensureComfyServer(endpoint: initialComfy, paths: storage.paths) : true
         }
@@ -253,7 +398,7 @@ final class AppStore: ObservableObject {
                 }
             }
             if preferences.lmEndpoint == initialLM { preferences.lmEndpoint = chosenEndpoint }
-            models = builtInModels + available
+            models = builtInModels + mlxModels + available
             if !available.isEmpty {
                 let list = available
                 if preferences.defaultModel.isEmpty {
@@ -263,13 +408,27 @@ final class AppStore: ObservableObject {
                 if let id = selectedID, let i = index(id), chats[i].model.isEmpty { chats[i].model = preferences.defaultModel }
             }
             save()
-        } else if requiresExternalText { error = "Выбранная модель LM Studio / Bionic недоступна. Встроенная модель остаётся в списке; проверьте /models или /diagnostics." }
+        } else if requiresExternalText {
+            if let fallback = builtInModels.first {
+                if !preferences.defaultModel.hasPrefix("builtin-text:") && !preferences.defaultModel.hasPrefix("mlx-text:") { preferences.defaultModel = fallback.id }
+                for index in chats.indices {
+                    if !chats[index].model.hasPrefix("builtin-text:") && !chats[index].model.hasPrefix("mlx-text:") { chats[index].model = fallback.id }
+                    if let prompt = chats[index].imagePromptModel, !prompt.hasPrefix("builtin-text:") && !prompt.hasPrefix("mlx-text:") {
+                        chats[index].imagePromptModel = fallback.id
+                    }
+                }
+                error = "LM Studio недоступна: чаты переключены на локальную \(fallback.name). История сохранена."
+                save()
+            } else { error = "Выбранная модель LM Studio / Bionic недоступна. Проверьте /models или /diagnostics." }
+        }
         switch await comfyResult {
         case .success(true):
-            if requiresComfy, let list = try? await inferenceRegistry.externalImage.models() { checkpoints += list.map(\.id) }
+            if requiresComfy, let list = try? await inferenceRegistry.externalImage.models() {
+                checkpoints = LocalServices.mergedImageCheckpoints([checkpoints, externalImageChoices(list.map(\.id))])
+            }
         case .success(false):
-            if requiresComfy { error = "Локальный API ComfyUI не запустился. Проверьте установку и адрес в /diagnostics." }
-        case .failure(let failure): if requiresComfy { error = "ComfyUI: \(failure.localizedDescription)" }
+            if requiresComfy { selectOfflineImageFallback(builtInImages: builtInImages, localImages: localImages) }
+        case .failure(let failure): if requiresComfy { error = "ComfyUI: \(failure.localizedDescription)"; selectOfflineImageFallback(builtInImages: builtInImages, localImages: localImages) }
         }
         for config in preferences.plugins where config.enabled {
             do { try await activatePlugin(config) }
@@ -277,6 +436,22 @@ final class AppStore: ObservableObject {
         }
         startNextJob()
         startFeatureMonitor()
+    }
+    private func selectOfflineImageFallback(builtInImages: [ModelDescriptor], localImages: [ModelDescriptor]) {
+        guard let fallback = localImages.first ?? builtInImages.first else {
+            error = "ComfyUI недоступна, автономной модели изображений нет."; return
+        }
+        if let value = preferences.defaultImageModel, !value.hasPrefix("builtin-image:") && !value.hasPrefix("local-image:") && !value.hasPrefix("workflow:") {
+            preferences.defaultImageModel = fallback.id
+        }
+        for index in chats.indices {
+            let value = chats[index].imageModel
+            if !value.hasPrefix("builtin-image:") && !value.hasPrefix("local-image:") && !value.hasPrefix("workflow:") {
+                chats[index].imageModel = fallback.id
+            }
+        }
+        error = "ComfyUI недоступна: обычные чаты изображений переключены на \(fallback.name). Workflow требуют ComfyUI."
+        save()
     }
     func capture<T>(_ operation: () async throws -> T) async -> Result<T, Error> { do { return .success(try await operation()) } catch { return .failure(error) } }
     func stop() {

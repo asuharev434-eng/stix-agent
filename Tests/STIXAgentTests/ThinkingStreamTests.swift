@@ -28,6 +28,19 @@ final class ThinkingStreamTests: XCTestCase {
         XCTAssertEqual(filter.consume("1 < 2 <think>a</think>yes<think>b</think>!", finishing: true), ThinkingDelta(text: "1 < 2 yes!", reasoning: "ab"))
     }
 
+    func testGemmaThoughtChannelIsHiddenAcrossChunks() {
+        var filter = ThinkingStream()
+        var answer = "", reasoning = ""
+        for chunk in ["<|chan", "nel>thought\nprivate", "<chan", "nel|>42"] {
+            let delta = filter.consume(chunk)
+            answer += delta.text
+            reasoning += delta.reasoning
+        }
+        let final = filter.consume("", finishing: true)
+        XCTAssertEqual(answer + final.text, "42")
+        XCTAssertEqual(reasoning + final.reasoning, "\nprivate")
+    }
+
     private func event(_ delta: JSONValue, finish: String? = nil, parser: inout LMStreamParser) throws -> String? {
         var choice: [String: JSONValue] = ["index": .number(0), "delta": delta]
         if let finish { choice["finish_reason"] = .string(finish) }

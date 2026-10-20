@@ -65,7 +65,11 @@ enum ToolExposure {
         let needed = matches(query: currentRequest, tools: all.filter { $0.name != "discover_tools" })
         guard !needed.isEmpty || actionRoots.contains(where: { lower.contains($0) }) || !exposed.isEmpty else { return [] }
         let byName = Dictionary(uniqueKeysWithValues: all.map { ($0.name, $0) })
-        let selected = ["discover_tools"] + exposed.sorted() + needed.map(\.name)
+        let exactNames = all.map(\.name).filter { name in
+            lower.range(of: "(?<![a-z0-9_])" + NSRegularExpression.escapedPattern(for: name) + "(?![a-z0-9_])",
+                        options: .regularExpression) != nil
+        }
+        let selected = exactNames + exposed.sorted() + needed.map(\.name) + ["discover_tools"]
         var seen = Set<String>()
         return selected.compactMap { seen.insert($0).inserted ? byName[$0] : nil }.prefix(7).map { $0 }
     }

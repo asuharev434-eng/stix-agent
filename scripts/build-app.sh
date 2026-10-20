@@ -37,6 +37,31 @@ if [[ "${STIX_BUNDLE_IMAGE:-0}" == "1" ]]; then
     cp "$project_dir/models/CreativeML-OpenRAIL-M.txt" "$app_dir/Contents/Resources/Licenses/"
     cp "$project_dir/models/Apple-CoreML-StableDiffusion-LICENSE.txt" "$app_dir/Contents/Resources/Licenses/"
 fi
+if [[ "${STIX_BUNDLE_SDCPP:-0}" == "1" ]]; then
+    "$project_dir/scripts/build-sdcpp.sh"
+    cp "$project_dir/dist/native/SDCPP/stix-sd-cli" "$app_dir/Contents/MacOS/stix-sd-cli"
+    mkdir -p "$app_dir/Contents/Resources/Licenses"
+    ditto "$project_dir/dist/native/SDCPP/Licenses" "$app_dir/Contents/Resources/Licenses"
+fi
+if [[ "${STIX_BUNDLE_VISION:-0}" == "1" ]]; then
+    [[ "${STIX_BUNDLE_TEXT:-0}" == "1" ]] || { print -u2 "Vision helper requires the bundled llama runtime"; exit 1; }
+    "$project_dir/scripts/build-llama-vision.sh"
+    cp "$project_dir/dist/native/Vision/stix-mtmd-cli" "$app_dir/Contents/MacOS/stix-mtmd-cli"
+    ditto "$project_dir/dist/native/Vision/Frameworks" "$app_dir/Contents/Frameworks"
+fi
+if [[ "${STIX_BUNDLE_MLX:-0}" == "1" ]]; then
+    /usr/bin/swift build --package-path "$project_dir/Vendor/MLXRunner" -c release
+    cp "$project_dir/Vendor/MLXRunner/.build/release/stix-mlx-runner" "$app_dir/Contents/MacOS/stix-mlx-runner"
+    mkdir -p "$app_dir/Contents/Resources/Licenses"
+    for resource_bundle in "$project_dir"/Vendor/MLXRunner/.build/release/*.bundle(N); do
+        ditto "$resource_bundle" "$app_dir/Contents/Resources/${resource_bundle:t}"
+    done
+    for package in mlx-swift-lm mlx-swift swift-huggingface swift-transformers swift-jinja yyjson swift-crypto swift-asn1 swift-collections swift-numerics; do
+        for license_file in "$project_dir"/Vendor/MLXRunner/.build/checkouts/$package/LICENSE*(N); do
+            cp "$license_file" "$app_dir/Contents/Resources/Licenses/${package}-${license_file:t}"
+        done
+    done
+fi
 cp "$project_dir/scripts/Info.plist" "$app_dir/Contents/Info.plist"
 if [[ -f "$project_dir/Sources/STIXAgent/Resources/AppIcon.icns" ]]; then
     cp "$project_dir/Sources/STIXAgent/Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
@@ -56,6 +81,27 @@ for library in "$app_dir"/Contents/Frameworks/lib*.dylib(N); do
         codesign --force --sign "$signing_identity" --options runtime "$timestamp_option" "$library"
     fi
 done
+if [[ -x "$app_dir/Contents/MacOS/stix-sd-cli" ]]; then
+    if [[ "$signing_identity" == "-" ]]; then
+        codesign --force --sign - "$app_dir/Contents/MacOS/stix-sd-cli"
+    else
+        codesign --force --sign "$signing_identity" --options runtime "$timestamp_option" "$app_dir/Contents/MacOS/stix-sd-cli"
+    fi
+fi
+if [[ -x "$app_dir/Contents/MacOS/stix-mlx-runner" ]]; then
+    if [[ "$signing_identity" == "-" ]]; then
+        codesign --force --sign - "$app_dir/Contents/MacOS/stix-mlx-runner"
+    else
+        codesign --force --sign "$signing_identity" --options runtime "$timestamp_option" "$app_dir/Contents/MacOS/stix-mlx-runner"
+    fi
+fi
+if [[ -x "$app_dir/Contents/MacOS/stix-mtmd-cli" ]]; then
+    if [[ "$signing_identity" == "-" ]]; then
+        codesign --force --sign - "$app_dir/Contents/MacOS/stix-mtmd-cli"
+    else
+        codesign --force --sign "$signing_identity" --options runtime "$timestamp_option" "$app_dir/Contents/MacOS/stix-mtmd-cli"
+    fi
+fi
 if [[ "$signing_identity" == "-" ]]; then
     codesign --force --sign - --entitlements "$project_dir/scripts/STIXAgent.entitlements" --identifier studio.stix.agent "$app_dir"
 else

@@ -5,7 +5,7 @@ import Foundation
 private typealias LlamaPieceCallback = @convention(c) (UnsafePointer<CChar>?, Int, UnsafeMutableRawPointer?) -> Int32
 private typealias LlamaLoad = @convention(c) (UnsafePointer<CChar>, UInt32, UnsafeMutablePointer<CChar>, Int) -> UnsafeMutableRawPointer?
 private typealias LlamaContextLength = @convention(c) (UnsafeMutableRawPointer?) -> UInt32
-private typealias LlamaGenerate = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>, UInt32, LlamaPieceCallback,
+private typealias LlamaGenerate = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>, UInt32, Float, LlamaPieceCallback,
                                                   UnsafeMutableRawPointer?, UnsafeMutablePointer<CChar>, Int) -> Int32
 private typealias LlamaUnload = @convention(c) (UnsafeMutableRawPointer?) -> Void
 
@@ -97,6 +97,12 @@ actor LlamaTextEngine: TextInferenceEngine {
     private var loadingWaiters = 0
     private var busy = false
 
+    deinit {
+        if let nativeHandle, let library {
+            library.unload(UnsafeMutableRawPointer(bitPattern: nativeHandle))
+        }
+    }
+
     init(modelID: String, modelURL: URL, expectedSHA256: String, libraryURL: URL,
          contextLength: UInt32 = 32768) {
         self.modelID = modelID
@@ -167,45 +173,64 @@ actor LlamaTextEngine: TextInferenceEngine {
         _ = try await prepare(model: model)
         guard let nativeHandle, let library else { throw AgentError.message("Встроенная модель не загрузилась") }
         try Task.checkCancellation()
-        let wire = try Self.wireMessages(messages, tools: tools, thinking: thinking)
-        await onRequest(messages)
-        await onPhase("Модель формирует ответ…")
         let outputLimit = UInt32(min(max(1, maxOutputTokens ?? 2048), 32768))
-        var callbackState: LlamaCallbackState?
-        let stream = AsyncThrowingStream<String, Error> { continuation in
-            let state = LlamaCallbackState(continuation)
-            callbackState = state
-            Task.detached(priority: .userInitiated) {
-                var error = [CChar](repeating: 0, count: 1024)
-                let user = Unmanaged.passRetained(state).toOpaque()
-                defer { Unmanaged<LlamaCallbackState>.fromOpaque(user).release() }
-                let result = wire.withCString {
-                    library.generate(UnsafeMutableRawPointer(bitPattern: nativeHandle), $0,
-                                     outputLimit, llamaCallback, user, &error, error.count)
+        let temperature: Float = requestedContext <= 256 ? 0 : (tools.isEmpty ? 0.7 : 0.1)
+        var request = messages
+        for attempt in 0..<2 {
+            try Task.checkCancellation()
+            let wire = try Self.wireMessages(request, tools: tools, thinking: thinking || requestedContext <= 256)
+            await onRequest(request)
+            await onPhase(attempt == 0 ? "Модель формирует ответ…" : "Исправляю формат вызова инструмента…")
+            var callbackState: LlamaCallbackState?
+            let stream = AsyncThrowingStream<String, Error> { continuation in
+                let state = LlamaCallbackState(continuation)
+                callbackState = state
+                Task.detached(priority: .userInitiated) {
+                    var error = [CChar](repeating: 0, count: 1024)
+                    let user = Unmanaged.passRetained(state).toOpaque()
+                    defer { Unmanaged<LlamaCallbackState>.fromOpaque(user).release() }
+                    let result = wire.withCString {
+                        library.generate(UnsafeMutableRawPointer(bitPattern: nativeHandle), $0,
+                                         outputLimit, temperature, llamaCallback, user, &error, error.count)
+                    }
+                    if result < 0 { state.finish(AgentError.message(String(cString: error))) }
+                    else { state.finish() }
                 }
-                if result < 0 { state.finish(AgentError.message(String(cString: error))) }
-                else { state.finish() }
             }
+            guard let callbackState else { throw AgentError.message("Не удалось запустить встроенную модель") }
+            var parser = ThinkingStream()
+            var answer = ""
+            try await withTaskCancellationHandler {
+                for try await chunk in stream {
+                    try Task.checkCancellation()
+                    let delta = parser.consume(chunk)
+                    answer += delta.text
+                    if !delta.text.isEmpty, tools.isEmpty { await onText(delta.text) }
+                    if thinking, !delta.reasoning.isEmpty { await onReasoning(delta.reasoning) }
+                }
+            } onCancel: { callbackState.cancel() }
+            let final = parser.consume("", finishing: true)
+            answer += final.text
+            if !final.text.isEmpty, tools.isEmpty { await onText(final.text) }
+            if thinking, !final.reasoning.isEmpty { await onReasoning(final.reasoning) }
+            let parsed = Self.parseToolReply(answer, allowed: Set(tools.map(\.name)))
+            if parsed.toolCalls.isEmpty, !tools.isEmpty, Self.looksLikeToolCall(answer) {
+                guard attempt == 0 else {
+                    throw AgentError.message("Модель дважды вернула повреждённый вызов инструмента. Действие не выполнено; выберите другую модель или повторите задачу.")
+                }
+                request.append(.init(role: "assistant", content: String(answer.prefix(4096))))
+                request.append(.init(role: "user", content: "Предыдущий JSON вызова инструмента повреждён. Никакое действие не выполнялось. Повтори только один первый нужный вызов в виде строго корректного JSON объекта: {\"tool_calls\":[{\"name\":\"имя\",\"arguments\":{...}}]}. Без второго вызова, пояснений и дополнительных ключей. После результата инструмента сможешь сделать следующий шаг."))
+                continue
+            }
+            if parsed.toolCalls.isEmpty, !tools.isEmpty { await onText(parsed.content) }
+            return parsed
         }
-        guard let callbackState else { throw AgentError.message("Не удалось запустить встроенную модель") }
-        var parser = ThinkingStream()
-        var answer = ""
-        try await withTaskCancellationHandler {
-            for try await chunk in stream {
-                try Task.checkCancellation()
-                let delta = parser.consume(chunk)
-                answer += delta.text
-                if !delta.text.isEmpty, tools.isEmpty { await onText(delta.text) }
-                if thinking, !delta.reasoning.isEmpty { await onReasoning(delta.reasoning) }
-            }
-        } onCancel: { callbackState.cancel() }
-        let final = parser.consume("", finishing: true)
-        answer += final.text
-        if !final.text.isEmpty, tools.isEmpty { await onText(final.text) }
-        if thinking, !final.reasoning.isEmpty { await onReasoning(final.reasoning) }
-        let parsed = Self.parseToolReply(answer, allowed: Set(tools.map(\.name)))
-        if parsed.toolCalls.isEmpty, !tools.isEmpty { await onText(parsed.content) }
-        return parsed
+        throw AgentError.message("Не удалось получить ответ модели")
+    }
+
+    private static func looksLikeToolCall(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed.hasPrefix("{") || trimmed.hasPrefix("```json")) && trimmed.contains("\"tool_calls\"")
     }
 
     func release() {
@@ -244,14 +269,17 @@ actor LlamaTextEngine: TextInferenceEngine {
         guard messages.allSatisfy({ ($0.imageURLs ?? []).isEmpty }) else {
             throw AgentError.message("Эта встроенная текстовая модель не поддерживает изображения")
         }
-        var mapped: [[String: String]] = messages.map { message in
+        var mapped: [[String: String]] = try messages.map { message in
             let role = message.role == "tool" ? "user" : message.role
             var content = message.content ?? ""
             if message.role == "tool" { content = "Результат инструмента \(message.toolCallID ?? ""): \(content)" }
             if !message.toolCalls.isEmpty {
-                content += "\nВызовы инструментов: " + message.toolCalls.map {
-                    "{\"id\":\"\($0.id)\",\"name\":\"\($0.name)\",\"arguments\":\($0.arguments)}"
-                }.joined(separator: ",")
+                let calls = try message.toolCalls.map { call in
+                    JSONValue.object(["id": .string(call.id), "name": .string(call.name),
+                                      "arguments": try JSONValue.parse(call.arguments)])
+                }
+                let callJSON = JSONValue.object(["tool_calls": .array(calls)]).encoded
+                content = content.isEmpty ? callJSON : content + "\n" + callJSON
             }
             return ["role": role, "content": content]
         }

@@ -118,6 +118,11 @@ extension AppStore {
             guard let first = models.first else { throw AgentError.message("Нет доступной текстовой модели. Проверьте встроенную сборку или локальный API в /diagnostics.") }
             model = first.id; if let updated = index(chatID) { chats[updated].model = model }
         }
+        if let descriptor = models.first(where: { $0.id == model }), TinyTextPolicy.applies(descriptor) {
+            try await runTinyText(text: text, attachments: attachments, chatID: chatID,
+                                  sourceMessageID: sourceMessageID, descriptor: descriptor)
+            return
+        }
         let prepared = try await prepareAgentAttachments(attachments)
         let attachmentText = prepared.text
         let hasImages = !prepared.imageURLs.isEmpty
@@ -281,16 +286,36 @@ extension AppStore {
             if !request.resizeOnly {
                 let textModel = chats[i].imagePromptModel ?? chats[i].model
                 guard !textModel.isEmpty else { throw AgentError.message("Выберите текстовую модель для подготовки промпта") }
-                let (promptRef, promptEngine) = try inferenceRegistry.text(for: textModel)
-                if promptRef.provider == .lmStudio { try ModelOrchestrator.validateEndpoint(preferences.lmEndpoint) }
-                updateTaskPhase("Подготовка промпта: " + textModel)
                 reasoningText = ""; transientReasoning = ""
                 let messages = ImagePromptAdapter.messages(request: request, imageModel: selected, workflow: workflow, language: chats[i].imagePromptLanguage ?? "auto")
-                let reply = try await promptEngine.complete(model: promptRef.id, messages: messages, tools: [], maxOutputTokens: nil, preserveContext: false, thinking: preferences.thinking ?? false, onPhase: { _ in }, onRequest: { _ in }, onReasoning: { token in await store.receiveReasoning(token) }, onText: { _ in })
-                let adapted = try ImagePromptAdapter.parse(vault.redact(reply.content))
+                func prepare(using modelID: String) async throws -> ImagePromptAdapter.Result {
+                    let (promptRef, promptEngine) = try inferenceRegistry.text(for: modelID)
+                    if promptRef.provider == .lmStudio { try ModelOrchestrator.validateEndpoint(preferences.lmEndpoint) }
+                    updateTaskPhase("Подготовка промпта: " + modelID)
+                    let reply = try await promptEngine.complete(model: promptRef.id, messages: messages, tools: [], maxOutputTokens: nil, preserveContext: false, thinking: preferences.thinking ?? false, onPhase: { _ in }, onRequest: { _ in }, onReasoning: { token in await store.receiveReasoning(token) }, onText: { _ in })
+                    return try ImagePromptAdapter.parse(vault.redact(reply.content))
+                }
+                let fallback = chats[i].model.hasPrefix("builtin-text:") ? chats[i].model : models.first(where: { $0.id.hasPrefix("builtin-text:") })?.id
+                var usedModel = textModel
+                let adapted: ImagePromptAdapter.Result
+                do {
+                    if !textModel.hasPrefix("builtin-text:"),
+                       !(await LocalServices.modelReady(preferences.lmEndpoint)),
+                       let fallback, fallback != textModel {
+                        usedModel = fallback
+                        updateTaskPhase("Внешняя модель недоступна; использую встроенную для промпта…")
+                    }
+                    adapted = try await prepare(using: usedModel)
+                } catch {
+                    guard !(error is CancellationError), let fallback, fallback != usedModel,
+                          !usedModel.hasPrefix("builtin-text:") else { throw error }
+                    usedModel = fallback
+                    updateTaskPhase("Модель подготовки промпта не ответила; использую встроенную…")
+                    adapted = try await prepare(using: fallback)
+                }
                 request.prompt = adapted.prompt
                 if !request.explicitOptions.contains("negative") { request.negativePrompt = adapted.negative }
-                editMessage(card.id, chatID: chatID) { $0.detail = "Исходное описание:\n\(prompt)\n\nТекстовая модель: \(textModel)\nМодель изображения: \(selected)\n\nПодготовленный промпт:\n\(adapted.prompt)\n\nNegative:\n\(adapted.negative)" }
+                editMessage(card.id, chatID: chatID) { $0.detail = "Исходное описание:\n\(prompt)\n\nТекстовая модель: \(usedModel)\nМодель изображения: \(selected)\n\nПодготовленный промпт:\n\(adapted.prompt)\n\nNegative:\n\(adapted.negative)" }
                 reasoningText = ""; transientReasoning = ""
                 updateTaskPhase("Генерация изображения…")
             }

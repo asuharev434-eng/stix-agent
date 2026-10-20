@@ -6,6 +6,19 @@ enum LocalServices {
     private static var comfyProcess: Process?
     static var ownsComfy: Bool { comfyProcess?.isRunning == true }
     private static var comfyLog: FileHandle?
+    static func installedImageCheckpoints(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [String] {
+        let folder = home.appendingPathComponent("ComfyUI-Shared/models/checkpoints", isDirectory: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                                                                        options: [.skipsHiddenFiles]) else { return [] }
+        let extensions: Set<String> = ["safetensors", "ckpt"]
+        return files.filter { extensions.contains($0.pathExtension.lowercased()) &&
+            ((try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false)
+        }.map(\.lastPathComponent).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+    static func mergedImageCheckpoints(_ groups: [[String]]) -> [String] {
+        var seen = Set<String>()
+        return groups.flatMap { $0 }.filter { seen.insert($0).inserted }
+    }
     static func startInstalledComfy(paths: AppStoragePaths) throws -> Bool {
         if comfyProcess?.isRunning == true { return true }
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

@@ -5,6 +5,8 @@ import Foundation
 enum ModelProvider: String, Codable, Sendable {
     case builtInText
     case builtInImage
+    case localCheckpoint
+    case localMLX
     case lmStudio
     case comfyUI
 }
@@ -26,15 +28,20 @@ struct ModelRef: Codable, Hashable, Sendable {
         switch provider {
         case .builtInText: "builtin-text:" + id
         case .builtInImage: "builtin-image:" + id
+        case .localCheckpoint: "local-image:" + id
+        case .localMLX: "mlx-text:" + id
         case .lmStudio, .comfyUI: id
         }
     }
 
     static func resolveText(_ storedID: String) throws -> ModelRef {
+        if storedID.hasPrefix("mlx-text:") {
+            return try .init(provider: .localMLX, id: String(storedID.dropFirst("mlx-text:".count)))
+        }
         if storedID.hasPrefix("builtin-text:") {
             return try .init(provider: .builtInText, id: String(storedID.dropFirst("builtin-text:".count)))
         }
-        guard !storedID.hasPrefix("builtin-image:") else {
+        guard !storedID.hasPrefix("builtin-image:"), !storedID.hasPrefix("local-image:") else {
             throw AgentError.message("Выбрана модель изображений вместо текстовой")
         }
         guard !storedID.hasPrefix("builtin-") else {
@@ -44,10 +51,13 @@ struct ModelRef: Codable, Hashable, Sendable {
     }
 
     static func resolveImage(_ storedID: String) throws -> ModelRef {
+        if storedID.hasPrefix("local-image:") {
+            return try .init(provider: .localCheckpoint, id: String(storedID.dropFirst("local-image:".count)))
+        }
         if storedID.hasPrefix("builtin-image:") {
             return try .init(provider: .builtInImage, id: String(storedID.dropFirst("builtin-image:".count)))
         }
-        guard !storedID.hasPrefix("builtin-text:") else {
+        guard !storedID.hasPrefix("builtin-text:"), !storedID.hasPrefix("mlx-text:") else {
             throw AgentError.message("Выбрана текстовая модель вместо модели изображений")
         }
         guard !storedID.hasPrefix("builtin-") else {
@@ -121,23 +131,33 @@ struct InferenceRegistry: Sendable {
     let externalImage: any ImageInferenceEngine
     let builtInText: (any TextInferenceEngine)?
     let builtInImage: (any ImageInferenceEngine)?
+    let localCheckpoint: (any ImageInferenceEngine)?
+    let localMLX: (any TextInferenceEngine)?
 
     init(lmEndpoint: String, comfyEndpoint: String,
          builtInText: (any TextInferenceEngine)? = nil,
-         builtInImage: (any ImageInferenceEngine)? = nil) {
+         builtInImage: (any ImageInferenceEngine)? = nil,
+         localCheckpoint: (any ImageInferenceEngine)? = nil,
+         localMLX: (any TextInferenceEngine)? = nil) {
         externalText = LMStudioTextEngine(client: LMStudioClient(endpoint: lmEndpoint))
         externalImage = ComfyImageEngine(client: ComfyClient(endpoint: comfyEndpoint))
         self.builtInText = builtInText
         self.builtInImage = builtInImage
+        self.localCheckpoint = localCheckpoint
+        self.localMLX = localMLX
     }
 
     init(externalText: any TextInferenceEngine, externalImage: any ImageInferenceEngine,
          builtInText: (any TextInferenceEngine)? = nil,
-         builtInImage: (any ImageInferenceEngine)? = nil) {
+         builtInImage: (any ImageInferenceEngine)? = nil,
+         localCheckpoint: (any ImageInferenceEngine)? = nil,
+         localMLX: (any TextInferenceEngine)? = nil) {
         self.externalText = externalText
         self.externalImage = externalImage
         self.builtInText = builtInText
         self.builtInImage = builtInImage
+        self.localCheckpoint = localCheckpoint
+        self.localMLX = localMLX
     }
 
     func text(for storedID: String) throws -> (ModelRef, any TextInferenceEngine) {
@@ -147,6 +167,9 @@ struct InferenceRegistry: Sendable {
         case .builtInText:
             guard let builtInText else { throw AgentError.message("Встроенная текстовая модель не установлена в этой сборке") }
             return (ref, builtInText)
+        case .localMLX:
+            guard let localMLX else { throw AgentError.message("Локальный MLX-движок отсутствует в этой сборке") }
+            return (ref, localMLX)
         default: throw AgentError.message("Выбранная модель не поддерживает текст")
         }
     }
@@ -158,6 +181,9 @@ struct InferenceRegistry: Sendable {
         case .builtInImage:
             guard let builtInImage else { throw AgentError.message("Встроенная модель изображений не установлена в этой сборке") }
             return (ref, builtInImage)
+        case .localCheckpoint:
+            guard let localCheckpoint else { throw AgentError.message("Локальный движок checkpoint отсутствует в этой сборке") }
+            return (ref, localCheckpoint)
         default: throw AgentError.message("Выбранная модель не поддерживает изображения")
         }
     }

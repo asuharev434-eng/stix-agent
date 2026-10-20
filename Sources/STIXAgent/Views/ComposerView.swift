@@ -24,7 +24,7 @@ struct ComposerView: View {
         if imageMode {
             let id = store.currentChat?.imageModel ?? "SDXL"
             return store.preferences.imageProfiles.first(where: { "workflow:" + $0.id == id })?.name
-                ?? (id.hasPrefix("builtin-image:") ? "Stable Diffusion 1.5 · встроенная" : id)
+                ?? store.imageModelName(id)
         }
         let id = store.currentChat?.model ?? ""
         return id.isEmpty ? "Выбрать модель" : store.models.first(where: { $0.id == id })?.name ?? id
@@ -203,17 +203,34 @@ struct ComposerView: View {
                 Menu {
                     if imageMode {
                         ForEach(store.preferences.imageProfiles) { profile in Button(profile.name) { store.setModel("workflow:" + profile.id, image: true) } }
-                        ForEach(store.checkpoints, id: \.self) { name in Button(name.hasPrefix("builtin-image:") ? "Stable Diffusion 1.5 · встроенная" : name) { store.setModel(name, image: true) } }
+                        ForEach(store.checkpoints, id: \.self) { name in Button(store.imageModelName(name)) { store.setModel(name, image: true) } }
                         if store.checkpoints.isEmpty { Text("Модели изображений не найдены") }
+                        Divider()
+                        Button("Добавить модель safetensors…") { store.importImageModel() }
+                        if !store.importedImageModels.isEmpty {
+                            Menu("Удалить импортированную модель") {
+                                ForEach(store.importedImageModels) { record in
+                                    Button(record.name, role: .destructive) { store.removeImportedImageModel(record) }
+                                }
+                            }
+                        }
                     } else {
                         ForEach(store.models) { model in Button(model.name) { store.setModel(model.id, image: false) } }
                         if store.models.isEmpty { Text("Модели не найдены") }
                         Divider()
                         Button("Добавить модель GGUF…") { store.importTextModel() }
+                        Button("Добавить папку MLX…") { store.importMLXModel() }
                         if !store.importedModels.isEmpty {
                             Menu("Удалить импортированную модель") {
                                 ForEach(store.importedModels) { record in
                                     Button(record.name, role: .destructive) { store.removeImportedTextModel(record) }
+                                }
+                            }
+                        }
+                        if !store.importedMLXModels.isEmpty {
+                            Menu("Удалить MLX-модель") {
+                                ForEach(store.importedMLXModels) { record in
+                                    Button(record.name, role: .destructive) { store.removeImportedMLXModel(record) }
                                 }
                             }
                         }

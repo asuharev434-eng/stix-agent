@@ -15,6 +15,7 @@ enum ModelOrchestrator {
         return UInt64((parameters * 0.75 + 1.5) * 1_073_741_824)
     }
     static func fitsAutomatically(_ model: ModelDescriptor, physicalMemory: UInt64, availableMemory: UInt64? = nil) -> Bool {
+        if TinyTextPolicy.applies(model) { return false }
         guard let estimated = estimatedBytes(model.id) else { return true }
         return Double(estimated) <= Double(physicalMemory) * 0.65 && (model.contextLimitIsLoaded == true || availableMemory == nil || estimated <= availableMemory!)
     }
