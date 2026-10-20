@@ -1,4 +1,5 @@
 import Foundation
+import RemoteChatCore
 
 enum JSONValue: Codable, Equatable, Sendable {
     case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
@@ -48,10 +49,10 @@ struct ModelDescriptor: Identifiable, Codable, Hashable, Sendable {
     var contextLimitIsLoaded: Bool? = nil
     var displayName: String? = nil
     var name: String {
-        if let displayName { return displayName }
+        if let displayName { return STIXModelNaming.displayName(displayName) }
         if id == "builtin-text:qwen3-4b-q4_k_m" { return "Qwen3 4B · встроенная" }
         if id.hasPrefix("builtin-image:") { return "Stable Diffusion 1.5 · встроенная" }
-        return id.split(separator: "/").last.map(String.init) ?? id
+        return STIXModelNaming.displayName(id.split(separator: "/").last.map(String.init) ?? id)
     }
 }
 struct ToolCall: Codable, Equatable, Sendable, Identifiable {

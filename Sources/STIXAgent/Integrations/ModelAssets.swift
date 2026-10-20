@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import RemoteChatCore
 
 struct ImportedGGUF: Codable, Sendable, Identifiable {
     let id: String
@@ -12,6 +13,7 @@ struct ImportedGGUF: Codable, Sendable, Identifiable {
     let contextLength: Int
     let projectorFileName: String?
     let projectorSHA256: String?
+    var displayName: String { STIXModelNaming.displayName(name) }
 
     init(id: String, name: String, fileName: String, sha256: String, bytes: Int64,
          architecture: String, tokenizer: String, contextLength: Int,
@@ -91,9 +93,12 @@ enum GGUFInspector {
             let key = try string(collect: true)
             let type: UInt32 = try number(UInt32.self)
             let wanted = key == "general.architecture" || key == "general.name" || key == "tokenizer.ggml.model" ||
-                key == "tokenizer.chat_template" || key.hasSuffix(".context_length")
+                key == "tokenizer.chat_template" || key == "split.count" || key.hasSuffix(".context_length")
             let val = try value(type, collect: wanted)
             if wanted { found[key] = val }
+        }
+        if let count = found["split.count"], (UInt64(count) ?? UInt64.max) > 1 {
+            throw AgentError.message("Это отдельная часть модели. Выберите полный GGUF после объединения всех частей.")
         }
         guard let architecture = found["general.architecture"],
               ["gpt2", "qwen3", "qwen3moe", "qwen35", "qwen35moe", "qwen2", "llama", "gemma", "gemma3", "gemma4", "gpt-oss", "gpt_oss", "mistral", "phi3", "phi4"].contains(architecture),

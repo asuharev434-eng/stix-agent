@@ -12,14 +12,10 @@
 	<string>studio.stix.agent</string>
 	<key>CFBundleName</key>
 	<string>STIX Agent</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Подключение iPhone к агенту на этом Mac.</string>
-	<key>NSBonjourServices</key>
-	<array><string>_stixagent._tcp</string></array>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.8</string>
+	<string>0.9.9</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -32,7 +28,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>29</string>
+	<string>30</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSAppTransportSecurity</key>
@@ -42,6 +38,10 @@
 	</dict>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>STIX Agent управляет приложениями по вашим поручениям в чате.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_stixagent._tcp</string>
+	</array>
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>Для работы с файлами на рабочем столе по вашим поручениям.</string>
 	<key>NSDocumentsFolderUsageDescription</key>

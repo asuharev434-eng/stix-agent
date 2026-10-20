@@ -251,7 +251,7 @@ struct ComposerView: View {
                         if !store.importedModels.isEmpty {
                             Menu("Удалить импортированную модель") {
                                 ForEach(store.importedModels) { record in
-                                    Button(record.name, role: .destructive) { store.removeImportedTextModel(record) }
+                                    Button(record.displayName, role: .destructive) { store.removeImportedTextModel(record) }
                                 }
                             }
                         }
