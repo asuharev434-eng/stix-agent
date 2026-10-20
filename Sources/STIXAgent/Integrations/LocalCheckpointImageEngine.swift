@@ -197,7 +197,11 @@ actor LocalCheckpointImageEngine: ImageInferenceEngine {
                                                                      directory: working.path, timeout: 1800,
                                                                      environment: ["GGML_METAL_TENSOR_DISABLE": "1"],
                                                                      onOutput: { parser.feed(String(decoding: $0, as: UTF8.self)) })
-                guard result.exitCode == 0, !result.timedOut, FileManager.default.fileExists(atPath: output.path) else {
+                // stable-diffusion.cpp can return exit code 0 and write a flat gray PNG
+                // after Metal reports an out-of-memory command buffer failure.
+                guard result.exitCode == 0, !result.timedOut,
+                      !Self.hasFatalBackendError(result.output),
+                      FileManager.default.fileExists(atPath: output.path) else {
                     throw AgentError.message("SDXL: \(result.output.suffix(2000))")
                 }
                 let final = outputDirectory.appendingPathComponent("STIX-" + UUID().uuidString + ".png")
@@ -211,6 +215,11 @@ actor LocalCheckpointImageEngine: ImageInferenceEngine {
         }
         await onProgress("Изображение сохранено")
         return outputs
+    }
+
+    static func hasFatalBackendError(_ output: String) -> Bool {
+        output.contains("OutOfMemory") || output.contains("Insufficient Memory") ||
+            output.contains("command buffer 0 failed")
     }
 
     private static func resizeImage(_ request: ImageRequest, outputDirectory: URL) throws -> URL {

@@ -20,12 +20,16 @@ private struct MLXRequest: Encodable {
     let directory: String
     let vision: Bool
     let messages: [Message]
+    let tools: [String]
     let maxTokens: Int
 }
 
-private struct MLXEvent: Decodable {
+struct MLXEvent: Decodable {
     let type: String
     let text: String?
+    let name: String?
+    let arguments: String?
+    let id: String?
 }
 
 /// App-owned MLX model directories are served by a signed local process, without HTTP.
@@ -175,8 +179,14 @@ actor LocalMLXTextEngine: TextInferenceEngine {
                 mapped.insert(.init(role: "system", content: first.content + "\n\n" + instruction, imageURLs: nil), at: 0)
             } else { mapped.insert(.init(role: "system", content: instruction, imageURLs: nil), at: 0) }
         }
+        // GPT-OSS may spend hundreds of tokens in an internal analysis channel before
+        // yielding a visible answer or tool call. A small visible-answer budget is not
+        // enough to cap that hidden work safely.
+        let requested = maxOutputTokens ?? 2048
+        let budget = item.modelType == "gpt_oss" ? max(requested, 3072) : requested
         let request = MLXRequest(directory: modelURL.path, vision: item.vision, messages: mapped,
-                                 maxTokens: min(max(1, maxOutputTokens ?? 2048), 8192))
+                                 tools: tools.map { $0.wire.encoded },
+                                 maxTokens: min(max(1, budget), 8192))
         let temporary = directory.appendingPathComponent(".request-" + UUID().uuidString + ".json")
         defer { try? FileManager.default.removeItem(at: temporary) }
         try JSONEncoder().encode(request).write(to: temporary, options: .atomic)
@@ -184,22 +194,41 @@ actor LocalMLXTextEngine: TextInferenceEngine {
                                                              directory: directory.path, timeout: 900,
                                                              maxOutputBytes: 2_000_000)
         if result.timedOut { throw AgentError.message("Локальная MLX-модель не ответила за отведённое время") }
+        guard result.exitCode == 0 else { throw AgentError.message("MLX: " + result.output.suffix(1200)) }
+        let reply = try Self.parseEvents(result.output, allowed: Set(tools.map(\.name)))
+        if reply.toolCalls.isEmpty { await onText(reply.content) }
+        return reply
+    }
+
+    static func parseEvents(_ raw: String, allowed: Set<String>) throws -> LMReply {
         var output = ""
-        var reportedError: String?
-        for line in result.output.split(separator: "\n") where line.hasPrefix("STIX_EVENT:") {
+        var calls: [ToolCall] = []
+        var completed = false
+        for line in raw.split(separator: "\n") where line.hasPrefix("STIX_EVENT:") {
             guard let data = String(line.dropFirst("STIX_EVENT:".count)).data(using: .utf8),
                   let event = try? JSONDecoder().decode(MLXEvent.self, from: data) else { continue }
             switch event.type {
             case "text": output += event.text ?? ""
-            case "error": reportedError = event.text
+            case "tool":
+                guard let name = event.name, allowed.contains(name),
+                      let arguments = event.arguments,
+                      let object = try? JSONValue.parse(arguments).object,
+                      calls.count < 16 else {
+                    throw AgentError.message("MLX вернула недопустимый вызов инструмента")
+                }
+                calls.append(ToolCall(id: event.id ?? "call_\(UUID().uuidString)", name: name,
+                                      arguments: JSONValue.object(object).encoded))
+            case "error": throw AgentError.message("MLX: " + (event.text ?? "неизвестная ошибка"))
+            case "done": completed = true
             default: break
             }
         }
-        if let reportedError { throw AgentError.message("MLX: " + reportedError) }
-        guard result.exitCode == 0 else { throw AgentError.message("MLX: " + result.output.suffix(1200)) }
-        let reply = LlamaTextEngine.parseToolReply(output, allowed: Set(tools.map(\.name)))
-        if reply.toolCalls.isEmpty { await onText(reply.content) }
-        return reply
+        guard completed else { throw AgentError.message("MLX не завершила ответ") }
+        if !calls.isEmpty { return LMReply(content: "", toolCalls: calls) }
+        guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AgentError.message("MLX вернула пустой ответ; увеличьте лимит токенов или выберите другую модель")
+        }
+        return LlamaTextEngine.parseToolReply(output, allowed: allowed)
     }
 
     private static func inspect(_ source: URL) throws -> (type: String, vision: Bool, bytes: Int64, files: [String: String]) {

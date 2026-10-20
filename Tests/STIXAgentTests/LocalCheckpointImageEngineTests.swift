@@ -4,6 +4,14 @@ import XCTest
 @testable import STIXAgent
 
 final class LocalCheckpointImageEngineTests: XCTestCase {
+    func testMetalFailureCannotBeReportedAsSuccessfulImage() {
+        XCTAssertTrue(LocalCheckpointImageEngine.hasFatalBackendError(
+            "[E] ggml: error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)"))
+        XCTAssertTrue(LocalCheckpointImageEngine.hasFatalBackendError(
+            "[E] ggml_metal_synchronize: error: command buffer 0 failed with status 5"))
+        XCTAssertFalse(LocalCheckpointImageEngine.hasFatalBackendError("[I] 1/1 images saved"))
+    }
+
     func testImportedCheckpointHasAppOwnedCopyAndStableIdentity() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("stix-checkpoint-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

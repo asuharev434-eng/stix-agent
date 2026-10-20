@@ -2,6 +2,15 @@ import XCTest
 @testable import STIXAgent
 
 final class WebSearchTests: XCTestCase {
+    func testLiveDuckDuckGoSearchWithoutInferenceServers() async throws {
+        guard ProcessInfo.processInfo.environment["STIX_TEST_LIVE_WEB_SEARCH"] == "1" else {
+            throw XCTSkip("Set STIX_TEST_LIVE_WEB_SEARCH=1 for the network smoke test")
+        }
+        let results = try await WebSearchClient().search(query: "Swift programming language official documentation", limit: 3)
+        XCTAssertFalse(results.isEmpty)
+        XCTAssertTrue(results.allSatisfy { $0.url.hasPrefix("https://") || $0.url.hasPrefix("http://") })
+    }
+
     func testParseActualDuckMarkupRedirectSnippetAndEntities() throws {
         let html = #"""
         <div class="result"><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.swift.org%2Fdocumentation%2F&amp;rut=opaque">Swift &amp; <b>Documentation</b></a>

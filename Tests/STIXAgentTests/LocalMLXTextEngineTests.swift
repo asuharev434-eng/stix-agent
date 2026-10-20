@@ -2,6 +2,20 @@ import XCTest
 @testable import STIXAgent
 
 final class LocalMLXTextEngineTests: XCTestCase {
+    func testNativeToolEventsReachAgentAndRejectUnlistedTools() throws {
+        let raw = #"""
+        STIX_EVENT:{"type":"tool","name":"write_file","arguments":"{\"path\":\"note.txt\",\"content\":\"ok\"}","id":"call-1"}
+        STIX_EVENT:{"type":"done"}
+        """#
+        let reply = try LocalMLXTextEngine.parseEvents(raw, allowed: ["write_file"])
+        XCTAssertEqual(reply.toolCalls.map(\.name), ["write_file"], reply.content)
+        XCTAssertEqual(reply.toolCalls.first?.id, "call-1")
+        XCTAssertEqual(try JSONValue.parse(XCTUnwrap(reply.toolCalls.first?.arguments))["content"].string, "ok")
+        XCTAssertThrowsError(try LocalMLXTextEngine.parseEvents(raw, allowed: ["read_file"]))
+        XCTAssertThrowsError(try LocalMLXTextEngine.parseEvents("STIX_EVENT:{\"type\":\"text\",\"text\":\"ok\"}", allowed: []))
+        XCTAssertThrowsError(try LocalMLXTextEngine.parseEvents("STIX_EVENT:{\"type\":\"done\"}", allowed: []))
+    }
+
     func testMLXProviderResolvesWithoutLMStudio() throws {
         let ref = try ModelRef.resolveText("mlx-text:abc")
         XCTAssertEqual(ref.provider, .localMLX)
@@ -52,5 +66,52 @@ final class LocalMLXTextEngineTests: XCTestCase {
                                               thinking: false, onPhase: { _ in }, onRequest: { _ in },
                                               onReasoning: { _ in }, onText: { _ in })
         XCTAssertTrue(reply.content.contains("4"), reply.content)
+    }
+
+    func testLiveAppOwnedMLXToolCall() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let directory = env["STIX_MLX_OWNED_DIRECTORY"],
+              let modelID = env["STIX_MLX_OWNED_MODEL_ID"],
+              let runner = env["STIX_MLX_RUNNER"] else {
+            throw XCTSkip("Set STIX_MLX_OWNED_DIRECTORY, STIX_MLX_OWNED_MODEL_ID and STIX_MLX_RUNNER")
+        }
+        let engine = LocalMLXTextEngine(directory: URL(fileURLWithPath: directory),
+                                        executable: URL(fileURLWithPath: runner))
+        let tool = ToolDefinition(name: "write_file", description: "Create a UTF-8 file",
+                                  parameters: .object([
+                                    "type": .string("object"),
+                                    "properties": .object([
+                                        "path": .object(["type": .string("string")]),
+                                        "content": .object(["type": .string("string")])
+                                    ]),
+                                    "required": .array([.string("path"), .string("content")])
+                                  ]))
+        let reply = try await engine.complete(model: modelID,
+            messages: [.init(role: "user", content: "Используй только write_file: создай note.txt с текстом OK. Верни вызов инструмента JSON, без пояснений.")],
+            tools: [tool], maxOutputTokens: 256, preserveContext: false, thinking: false,
+            onPhase: { _ in }, onRequest: { _ in }, onReasoning: { _ in }, onText: { _ in })
+        XCTAssertEqual(reply.toolCalls.map(\.name), ["write_file"], reply.content)
+        let arguments = try JSONValue.parse(XCTUnwrap(reply.toolCalls.first?.arguments))
+        XCTAssertEqual(arguments["path"].string, "note.txt")
+        XCTAssertEqual(arguments["content"].string, "OK")
+    }
+
+    func testLiveAppOwnedMLXVision() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let directory = env["STIX_MLX_OWNED_DIRECTORY"],
+              let modelID = env["STIX_MLX_OWNED_MODEL_ID"],
+              let runner = env["STIX_MLX_RUNNER"],
+              let image = env["STIX_MLX_TEST_IMAGE"] else {
+            throw XCTSkip("Set STIX_MLX_OWNED_DIRECTORY, STIX_MLX_OWNED_MODEL_ID, STIX_MLX_RUNNER and STIX_MLX_TEST_IMAGE")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: image))
+        let engine = LocalMLXTextEngine(directory: URL(fileURLWithPath: directory),
+                                        executable: URL(fileURLWithPath: runner))
+        let reply = try await engine.complete(model: modelID,
+            messages: [.init(role: "user", content: "What color is the mug in this image? Answer with one color word.",
+                             imageURLs: ["data:image/png;base64," + data.base64EncodedString()])],
+            tools: [], maxOutputTokens: 256, preserveContext: false, thinking: false,
+            onPhase: { _ in }, onRequest: { _ in }, onReasoning: { _ in }, onText: { _ in })
+        XCTAssertTrue(reply.content.lowercased().contains("red"), reply.content)
     }
 }

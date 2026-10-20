@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import HuggingFace
 import MLXHuggingFace
 import MLXLLM
@@ -15,7 +16,23 @@ private struct Request: Decodable {
     let directory: String
     let vision: Bool
     let messages: [Message]
+    let tools: [String]
     let maxTokens: Int
+}
+
+private func sendableJSON(_ value: Any) throws -> any Sendable {
+    if let object = value as? [String: Any] {
+        return try object.mapValues { try sendableJSON($0) }
+    }
+    if let array = value as? [Any] {
+        return try array.map { try sendableJSON($0) }
+    }
+    if let string = value as? String { return string }
+    if let number = value as? NSNumber {
+        if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue }
+        return number.doubleValue
+    }
+    throw RunnerError.invalidArguments
 }
 
 private struct Event: Encodable {
@@ -83,8 +100,15 @@ struct Runner {
             default: throw RunnerError.invalidArguments
             }
         }
+        let tools: [ToolSpec] = try request.tools.map { wire in
+            guard let data = wire.data(using: .utf8),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw RunnerError.invalidArguments
+            }
+            return try object.mapValues { try sendableJSON($0) }
+        }
         let session = ChatSession(container, generateParameters: parameters,
-                                  additionalContext: ["enable_thinking": false])
+                                  additionalContext: ["enable_thinking": false], tools: tools)
         for try await item in session.streamDetails(to: messages) {
             switch item {
             case .chunk(let text): emit(Event(type: "text", text: text, name: nil, arguments: nil, id: nil))
