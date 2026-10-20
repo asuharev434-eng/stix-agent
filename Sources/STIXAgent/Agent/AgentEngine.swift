@@ -101,6 +101,12 @@ extension AppStore {
     func systemPrompt(chatID: UUID) -> String {
         if chats.first(where: { $0.id == chatID })?.isClean == true { return "" }
         let folder = chats.first { $0.id == chatID }?.folder ?? FileManager.default.homeDirectoryForCurrentUser.path
+        if let chat = chats.first(where: { $0.id == chatID }),
+           CompactAgentContext.applies(model: chat.model, limit: contextLimit(for: chat)) {
+            let level = QuestionPolicy.level(chat.questionLevel ?? preferences.questionLevel)
+            return CompactAgentContext.prompt(folder: folder, questions: QuestionPolicy.budgets[level],
+                                              memory: memoryPrompt(chatID: chatID, compact: true))
+        }
         let connections = preferences.connections.map { "\($0.name): id=\($0.id), base=\($0.baseURL), docs=\($0.documentationPath)" }.joined(separator: "\n")
         let pluginList = preferences.plugins.map { "\($0.name) id=\($0.id) enabled=\($0.enabled)" }.joined(separator: "\n")
         return """
@@ -182,7 +188,8 @@ extension AppStore {
                 updateTaskPhase("Подготовка контекста и модели…")
                 let history = try await preparedContext(chatID: chatID, model: model, system: prompt, tools: tools)
 
-                reply = try await textEngine.complete(model: modelRef.id, messages: modelMessages(chatID: chatID, system: prompt, history: history), tools: tools, maxOutputTokens: resourceOutputLimit, preserveContext: false, thinking: preferences.thinking ?? false, onPhase: { phase in await store.updateTaskPhase(phase) }, onRequest: { [model] finalMessages in
+                let outputLimit = agentOutputLimit(chatID: chatID, system: prompt, tools: tools, history: history)
+                reply = try await textEngine.complete(model: modelRef.id, messages: modelMessages(chatID: chatID, system: prompt, history: history), tools: tools, maxOutputTokens: outputLimit, preserveContext: false, thinking: preferences.thinking ?? false, onPhase: { phase in await store.updateTaskPhase(phase) }, onRequest: { [model] finalMessages in
                     await store.captureContextRequest(model: model, messages: finalMessages, tools: tools, chatID: chatID)
                 }, onReasoning: { token in
                     await store.receiveReasoning(token)

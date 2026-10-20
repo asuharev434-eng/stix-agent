@@ -1,5 +1,9 @@
 # Liquid model integration — 2026-10-20
 
+Follow-up: ordinary Agent mode is now supported by the compact-context change.
+See [the tool-mode validation](2026-10-20-liquid-agent-tools.md). The observations
+below describe the preceding 0.9.9 integration, before that fix.
+
 Installed macOS STIX Agent 0.9.9 (30) displays pre-1.0 STIX text models as
 `STIX Liquid <version>-self/other`, including mobile variants. Stable model IDs,
 raw GGUF names, hashes and historical messages remain unchanged. The iOS local

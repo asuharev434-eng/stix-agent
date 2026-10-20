@@ -28,9 +28,18 @@ extension AppStore {
         guard let i = index(chatID), !chats[i].isClean else { return [] }
         if chats[i].model.hasPrefix("builtin-text:") {
             return ToolExposure.selectedForBuiltIn(from: allTools(), currentRequest: currentRequest,
-                                                   exposed: exposedToolNames)
+                                                   exposed: exposedToolNames, limit: contextLimit(for: chats[i]), system: system)
         }
         return ToolExposure.selected(from: allTools(), limit: contextLimit(for: chats[i]), system: system, currentRequest: currentRequest, exposed: exposedToolNames)
+    }
+    func agentOutputLimit(chatID: UUID, system: String, tools: [ToolDefinition], history: [LMMessage]) -> Int? {
+        guard let chat = chats.first(where: { $0.id == chatID }),
+              CompactAgentContext.applies(model: chat.model, limit: contextLimit(for: chat)) else { return resourceOutputLimit }
+        // Use the same response reserve as the input guard, rather than asking
+        // llama.cpp for 2048 tokens after budgeting only ~819 in a 4K window.
+        let reserve = ContextWindow.estimate(limit: contextLimit(for: chat), knownLimit: true,
+                                             system: system, tools: tools, history: history).reserveTokens
+        return min(resourceOutputLimit ?? reserve, reserve)
     }
     func modelMessages(chatID: UUID, system: String, history: [LMMessage]) -> [LMMessage] {
         if index(chatID).map({ chats[$0].isClean }) == true { return history }
@@ -77,12 +86,18 @@ extension AppStore {
             liveContextLimits[endpoint + "|" + chat.model] = limit
         }
         let capacity = min(contextLimit(for: chat) ?? 32768, 32768)
-        let summaryLimit = min(6000, max(1200, capacity / 8))
+        let compact = CompactAgentContext.applies(model: chat.model, limit: capacity)
+        let summaryLimit = compact ? min(1024, max(256, capacity * 3 / 16)) : min(6000, max(1200, capacity / 8))
         let instruction = ContextCompaction.summaryInstruction(maximumCharacters: summaryLimit)
-        let outputTokens = min(1536, max(256, capacity / 8))
+        let outputTokens = compact ? min(512, max(128, capacity / 16)) : min(1536, max(256, capacity / 8))
         // Bound UTF-8 bytes, including combining characters and emoji. Reserve
         // the previous summary and instructions on every incremental chunk.
-        let available = try ContextBudget.historyCharacters(contextLimit: capacity, system: instruction, tools: []) - summaryLimit * 2 - 512
+        // Accepted summaries are bounded in estimated tokens below as well as
+        // characters. Reserve that token bound once; multiplying it by two
+        // leaves no source-chunk budget in a 4K context.
+        let summaryReserve = compact ? summaryLimit : summaryLimit * 2
+        let framingReserve = compact ? 256 : 512
+        let available = try ContextBudget.historyCharacters(contextLimit: capacity, system: instruction, tools: []) - summaryReserve - framingReserve
         guard available >= 1024 else { throw AgentError.message("Окно модели слишком мало для безопасного сжатия") }
         let chunkSize = min(32000, available * 2)
         let chunks = ContextCompaction.chunks(plan.source, maximumBytes: chunkSize)

@@ -57,7 +57,7 @@ enum ToolExposure {
     /// A simple question has no tool schema, which prevents invented calls and
     /// leaves room for the answer in the model's context window.
     static func selectedForBuiltIn(from all: [ToolDefinition], currentRequest: String,
-                                   exposed: Set<String> = []) -> [ToolDefinition] {
+                                   exposed: Set<String> = [], limit: Int? = nil, system: String = "") -> [ToolDefinition] {
         let lower = currentRequest.lowercased()
         let actionRoots = ["созд", "запиш", "прочит", "покаж", "удал", "перемест", "сортир",
                            "исправ", "запуст", "выполн", "открой", "найд", "проверь",
@@ -69,9 +69,21 @@ enum ToolExposure {
             lower.range(of: "(?<![a-z0-9_])" + NSRegularExpression.escapedPattern(for: name) + "(?![a-z0-9_])",
                         options: .regularExpression) != nil
         }
-        let selected = exactNames + exposed.sorted() + needed.map(\.name) + ["discover_tools"]
+        let selected = exactNames + exposed.sorted() + needed.map(\.name)
         var seen = Set<String>()
-        return selected.compactMap { seen.insert($0).inserted ? byName[$0] : nil }.prefix(7).map { $0 }
+        let discovery = byName["discover_tools"].map { [$0] } ?? []
+        var result: [ToolDefinition] = []
+        for name in selected where name != "discover_tools" && seen.insert(name).inserted {
+            guard let tool = byName[name], result.count < 6 else { continue }
+            let candidate = result + [tool] + discovery
+            if limit == nil || (try? ContextBudget.historyCharacters(contextLimit: limit, system: system, tools: candidate)) != nil {
+                result.append(tool)
+            }
+        }
+        if limit == nil || (try? ContextBudget.historyCharacters(contextLimit: limit, system: system, tools: result + discovery)) != nil {
+            result += discovery
+        }
+        return result
     }
 
     static func selected(from all: [ToolDefinition], limit: Int?, system: String,
