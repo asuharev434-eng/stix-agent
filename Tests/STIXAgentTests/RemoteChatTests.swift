@@ -60,6 +60,28 @@ final class RemoteChatTests: XCTestCase {
         try? store.vault.remove("mobile." + code.pairingID.uuidString)
     }
 
+    @MainActor
+    func testPhoneAttachmentIsSavedInDedicatedChatAndTraversalIsRejected() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("stix-remote-upload-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AppStore(storage: StateStorage(paths: AppStoragePaths(root: root)))
+        let code = try await store.remoteChat.pairingCode()
+        _ = try await exchange(.init(operation: "pair", deviceName: "Test iPhone"), with: code)
+        let bytes = Data("local attachment".utf8)
+        let result = try await exchange(.init(operation: "send", text: "Прочитай файл",
+                                              uploadName: "note.txt", uploadData: bytes), with: code)
+        let file = try XCTUnwrap(store.chats.first(where: { $0.isMobile == true })?
+            .messages.first(where: { $0.role == "user" && $0.text == "Прочитай файл" })?
+            .attachments.first?.path)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: file)), bytes)
+        XCTAssertTrue(file.hasPrefix(root.path))
+        XCTAssertNotNil(result.snapshot)
+        let invalid = try await exchange(.init(operation: "send", text: "test",
+                                               uploadName: "../outside.txt", uploadData: bytes), with: code)
+        XCTAssertNotNil(invalid.error)
+        try? store.vault.remove("mobile." + code.pairingID.uuidString)
+    }
+
     @MainActor private func exchange(_ request: RemoteRequest, with code: RemotePairingCode,
                           requestID: UUID = UUID()) async throws -> RemoteResponse {
         let connection = try await RemoteSocket.connect(host: "127.0.0.1", port: code.port)

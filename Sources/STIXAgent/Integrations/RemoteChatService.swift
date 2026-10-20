@@ -24,6 +24,7 @@ final class RemoteChatService {
     private let cloud = RemoteCloudMailbox()
     private var cloudPolling: Task<Void, Never>?
     private var lastCloudRequests: [UUID: UUID] = [:]
+    private var remoteAvailabilityActivity: NSObjectProtocol?
 
     init(store: AppStore, root: URL, vault: SecretVault) {
         self.store = store; self.root = root; self.vault = vault
@@ -34,6 +35,7 @@ final class RemoteChatService {
     }
 
     func start() {
+        updateRemoteAvailability()
         if cloudPolling == nil, let cloud {
             cloudPolling = Task { [weak self] in
                 guard let self else { return }
@@ -105,9 +107,23 @@ final class RemoteChatService {
 
     var connectedDeviceNames: [String] { peers.map(\.name) }
 
+    func publishAssistantUpdate(chatID: UUID) {
+        guard let store, store.chats.contains(where: { $0.id == chatID && $0.isMobile == true }),
+              let cloud else { return }
+        let reply = RemoteResponse(snapshot: snapshot(in: store, chatID: chatID))
+        for peer in peers {
+            guard let saved = try? vault.get("mobile." + peer.id.uuidString),
+                  let key = Data(base64Encoded: saved),
+                  let envelope = try? RemoteEnvelope.seal(reply, peerID: peer.id,
+                                                          requestID: UUID(), key: key) else { continue }
+            Task { try? await cloud.notifyPhone(envelope) }
+        }
+    }
+
     func revokeAll() throws {
         for peer in peers { try vault.remove("mobile." + peer.id.uuidString) }
         peers.removeAll(); pendingCode = nil; store?.mobilePairing = nil
+        updateRemoteAvailability()
         try persistPeers()
     }
 
@@ -153,6 +169,7 @@ final class RemoteChatService {
             let name = String((request.deviceName ?? "iPhone").prefix(80))
             try vault.set(key.base64EncodedString(), for: "mobile." + peerID.uuidString)
             peers.append(.init(id: peerID, name: name, processedRequests: [requestID]))
+            updateRemoteAvailability()
             try persistPeers()
             pendingCode = nil; store.mobilePairing = nil
             return .init(snapshot: snapshot(in: store, chatID: mobileChat(in: store)))
@@ -163,9 +180,31 @@ final class RemoteChatService {
         switch request.operation {
         case "snapshot": break
         case "send":
-            guard let text = request.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            let text = request.text ?? ""
+            guard (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || request.uploadData != nil),
                   text.utf8.count <= 16_384 else { return .init(error: "Сообщение пустое или слишком длинное") }
-            guard store.sendRemote(text, chatID: chatID, requestID: requestID) else {
+            var attachments: [Attachment] = []
+            if let data = request.uploadData {
+                guard let rawName = request.uploadName, !rawName.isEmpty, rawName.utf8.count <= 160,
+                      rawName == URL(fileURLWithPath: rawName).lastPathComponent,
+                      !rawName.hasPrefix("."), !data.isEmpty, data.count <= 8 * 1024 * 1024 else {
+                    return .init(error: "Вложение должно быть файлом до 8 МБ")
+                }
+                let suffix = URL(fileURLWithPath: rawName).pathExtension.lowercased()
+                let allowed = ["png", "jpg", "jpeg", "webp", "heic", "gif", "txt", "md", "json", "csv", "pdf", "py", "swift", "js", "ts", "html", "css", "xml", "yaml", "yml", "log"]
+                guard allowed.contains(suffix) else { return .init(error: "Этот тип вложения пока не поддерживается") }
+                let directory = root.appendingPathComponent("RemoteChat/Uploads", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                let path = directory.appendingPathComponent("\(requestID.uuidString)-\(rawName)")
+                if !FileManager.default.fileExists(atPath: path.path) {
+                    try data.write(to: path, options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+                }
+                attachments = [.init(path: path.path, kind: ["png", "jpg", "jpeg", "webp", "heic", "gif"].contains(suffix) ? "image" : "file")]
+            }
+            let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Проанализируй вложение" : text
+            guard store.sendRemote(prompt, chatID: chatID, requestID: requestID, attachments: attachments) else {
                 return .init(error: "Не удалось сохранить сообщение на Mac")
             }
             try markProcessed(requestID, peerIndex: index)
@@ -231,6 +270,17 @@ final class RemoteChatService {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         try JSONEncoder().encode(peers).write(to: directory.appendingPathComponent("peers.json"), options: .atomic)
+    }
+
+    private func updateRemoteAvailability() {
+        if !peers.isEmpty && remoteAvailabilityActivity == nil {
+            remoteAvailabilityActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled],
+                reason: "STIX Agent ожидает запросы сопряжённого iPhone")
+        } else if peers.isEmpty, let activity = remoteAvailabilityActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            remoteAvailabilityActivity = nil
+        }
     }
 
     private func mobileChat(in store: AppStore) -> UUID {
@@ -305,7 +355,7 @@ extension AppStore {
     }
 
     @discardableResult
-    func sendRemote(_ raw: String, chatID: UUID, requestID: UUID) -> Bool {
+    func sendRemote(_ raw: String, chatID: UUID, requestID: UUID, attachments: [Attachment] = []) -> Bool {
         reloadSkills()
         guard canPersist, let i = index(chatID) else { return false }
         if jobs.contains(where: { $0.sourceMessageID == requestID }) ||
@@ -326,11 +376,11 @@ extension AppStore {
         do { executionPrompt = chats[i].isClean ? text : (try skillPrompt(text) ?? SlashCommands.pluginPrompt(text, plugins: preferences.plugins) ?? text) }
         catch { addMessage(.init(role: "assistant", text: error.localizedDescription, status: "error"), to: chatID); return true }
         let count = chats[i].messages.count
-        if !chats[i].isClean && handleLocalCommand(text, chatID: chatID) {
+        if attachments.isEmpty && !chats[i].isClean && handleLocalCommand(text, chatID: chatID) {
             if let index = index(chatID) { chats[index].messages.insert(.init(id: requestID, role: "user", text: text), at: min(count, chats[index].messages.count)); save() }
             return true
         }
-        enqueue(prompt: executionPrompt, attachments: [], chatID: chatID,
+        enqueue(prompt: executionPrompt, attachments: attachments, chatID: chatID,
                 sourceMessageID: requestID, displayPrompt: text)
         return true
     }

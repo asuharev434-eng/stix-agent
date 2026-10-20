@@ -15,6 +15,7 @@
     <key>NSPhotoLibraryAddUsageDescription</key><string>Сохранение сгенерированных изображений в приложение «Фото» по вашему запросу.</string>
     <key>NSLocalNetworkUsageDescription</key><string>Подключение к STIX Agent на Mac в вашей локальной сети.</string>
     <key>NSBonjourServices</key><array><string>_stixagent._tcp</string></array>
+    <key>UIBackgroundModes</key><array><string>remote-notification</string></array>
     <key>UILaunchScreen</key><dict/>
     <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
     <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>

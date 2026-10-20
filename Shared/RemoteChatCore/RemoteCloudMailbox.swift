@@ -49,12 +49,29 @@ public final class RemoteCloudMailbox {
         try await write(envelope, direction: "to-phone")
     }
 
+    public func notifyPhone(_ envelope: RemoteEnvelope) async throws {
+        try await write(envelope, direction: "phone-notification")
+    }
+
     public func latestForMac(peerID: UUID) async throws -> RemoteEnvelope? {
         try await read(peerID: peerID, direction: "to-mac")
     }
 
     public func latestForPhone(peerID: UUID) async throws -> RemoteEnvelope? {
         try await read(peerID: peerID, direction: "to-phone")
+    }
+
+    public func installChangeSubscription(id: String) async throws {
+        do {
+            _ = try await database.subscription(for: id)
+            return
+        } catch let error as CKError where error.code == .unknownItem {
+            let subscription = CKDatabaseSubscription(subscriptionID: id)
+            let info = CKSubscription.NotificationInfo()
+            info.shouldSendContentAvailable = true
+            subscription.notificationInfo = info
+            _ = try await database.save(subscription)
+        }
     }
 
     private func recordID(peerID: UUID, direction: String) -> CKRecord.ID {

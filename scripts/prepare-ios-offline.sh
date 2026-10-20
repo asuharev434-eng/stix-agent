@@ -57,4 +57,6 @@ fi
 }
 curl -fsSL "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/$model_revision/LICENSE" \
     -o "$native_dir/Qwen3-LICENSE.txt"
+"/usr/bin/python3" "$project_dir/scripts/stage-coreml-image.py" \
+    --output "$model_dir/CoreML-SD15-Palettized" --variant palettized --omit-safety
 print "Offline iPhone runtime and model are ready. Build iOS/STIXRemote.xcodeproj."

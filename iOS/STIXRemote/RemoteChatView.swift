@@ -1,16 +1,26 @@
 import SwiftUI
+import UniformTypeIdentifiers
+import PhotosUI
 
 struct RemoteChatView: View {
     @EnvironmentObject private var store: RemoteChatStore
     @State private var showCommands = false
     @State private var imageSaveAlert: String?
+    @State private var showModelImporter = false
+    @State private var showImageModelImporter = false
+    @State private var showAttachmentImporter = false
+    @State private var selectedPhoto: PhotosPickerItem?
     @FocusState private var composerFocused: Bool
 
     private var commandMatches: [RemoteCommand] {
         guard store.draft.hasPrefix("/"), !store.draft.contains("\n"), store.draft.count < 100 else { return [] }
         let search = store.draft.lowercased()
         let available = store.offlineMode ? [
-            RemoteCommand(command: "/help", title: "Локальные возможности", detail: "Что работает на iPhone")
+            RemoteCommand(command: "/help", title: "Локальные возможности", detail: "Что работает на iPhone"),
+            RemoteCommand(command: "/models", title: "Модели iPhone", detail: "Выбрать или импортировать модели"),
+            RemoteCommand(command: "/image", title: "Картинка на iPhone", detail: "Локальная модель изображений"),
+            RemoteCommand(command: "/calc", title: "Калькулятор", detail: "Например, /calc (17+8)*2"),
+            RemoteCommand(command: "/time", title: "Дата и время", detail: "Показать время iPhone")
         ] : (store.snapshot?.commands ?? [])
         return available.filter {
             $0.command.lowercased().hasPrefix(search) || $0.title.lowercased().contains(String(search.dropFirst()))
@@ -24,7 +34,7 @@ struct RemoteChatView: View {
                 if store.offlineMode {
                     HStack(spacing: 8) {
                         Image(systemName: "iphone")
-                        Text("Локально на iPhone · \(LocalLlamaEngine.modelName)")
+                        Text("Локально на iPhone · \(store.selectedLocalModel?.name ?? LocalLlamaEngine.modelName)")
                         Spacer()
                     }.font(.caption).padding(12).background(.blue.opacity(0.08))
                 } else if !store.connected {
@@ -66,9 +76,18 @@ struct RemoteChatView: View {
                 }
                 if store.localWorking {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("Локальная модель отвечает…", systemImage: "iphone")
-                            .font(.caption).foregroundStyle(.secondary)
-                        ProgressView()
+                        HStack {
+                            Label(store.localImageProgress == nil ? "Локальная модель отвечает…" : "Создаю изображение на iPhone…", systemImage: "iphone")
+                            Spacer()
+                            Button("Остановить", systemImage: "stop.fill") { store.stopLocalGeneration() }
+                        }.font(.caption).foregroundStyle(.secondary)
+                        if let progress = store.localImageProgress { ProgressView(value: progress) }
+                        else { ProgressView() }
+                        if !store.localPartial.isEmpty {
+                            Text(store.localPartial).font(.body).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .lineLimit(12)
+                        }
                     }.padding(.horizontal, 18).padding(.vertical, 10)
                 } else if !store.offlineMode,
                           let job = store.snapshot?.jobs.last(where: { ["running", "queued"].contains($0.status) }) {
@@ -88,7 +107,7 @@ struct RemoteChatView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(commandMatches) { command in
                                 Button {
-                                    store.draft = command.command + (command.command == "/image" || command.command.hasPrefix("/plugin/") ? " " : "")
+                                    store.draft = command.command + (["/image", "/calc"].contains(command.command) || command.command.hasPrefix("/plugin/") ? " " : "")
                                     if !store.draft.hasSuffix(" ") { Task { await store.send() } }
                                     composerFocused = true
                                 } label: {
@@ -131,6 +150,21 @@ struct RemoteChatView: View {
             } message: {
                 Text(imageSaveAlert ?? "")
             }
+            .fileImporter(isPresented: $showModelImporter, allowedContentTypes: [.data]) { result in
+                if case .success(let url) = result { Task { await store.importLocalModel(url) } }
+                else if case .failure(let error) = result { store.error = error.localizedDescription }
+            }
+            .fileImporter(isPresented: $showImageModelImporter, allowedContentTypes: [.folder]) { result in
+                if case .success(let url) = result { Task { await store.importLocalImageModel(url) } }
+                else if case .failure(let error) = result { store.error = error.localizedDescription }
+            }
+            .fileImporter(isPresented: $showAttachmentImporter, allowedContentTypes: [.item]) { result in
+                if case .success(let url) = result { Task { await store.attachFile(url) } }
+                else if case .failure(let error) = result { store.error = error.localizedDescription }
+            }
+            .onChange(of: selectedPhoto) { _, item in
+                if let item { Task { await store.attachPhoto(item); selectedPhoto = nil } }
+            }
         }
     }
 
@@ -168,20 +202,50 @@ struct RemoteChatView: View {
         VStack(alignment: .leading, spacing: 10) {
             Image(systemName: "sparkle").font(.largeTitle).padding(.bottom, 10)
             Text("Что сделаем?").font(.largeTitle.weight(.medium))
-            Text(store.offlineMode ? "Локальная модель отвечает без Mac и интернета. Для команд и изображений выберите MacBook." : "Чат с вашим Mac. Попросите агента выполнить задачу или введите / для команд.")
+            Text(store.offlineMode ? "Текст и /image работают на iPhone без Mac и интернета. Для инструментов Mac выберите MacBook." : "Чат с вашим Mac. Попросите агента выполнить задачу или введите / для команд.")
                 .foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 80)
     }
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 9) {
+            if let upload = store.pendingUpload {
+                HStack {
+                    Label(upload.name, systemImage: upload.isImage ? "photo" : "doc")
+                        .font(.caption).lineLimit(1)
+                    Spacer()
+                    Button("Удалить", systemImage: "xmark.circle.fill") { store.clearUpload() }
+                        .labelStyle(.iconOnly)
+                }.padding(.horizontal, 11)
+            }
             HStack(spacing: 8) {
                 if store.offlineMode {
-                    Label(LocalLlamaEngine.modelName, systemImage: "iphone")
-                        .font(.caption.weight(.medium)).lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Label("Фото — через Mac", systemImage: "photo")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Menu {
+                        ForEach(store.localModels) { model in
+                            Button(model.name, systemImage: store.selectedLocalModel?.id == model.id ? "checkmark" : "circle") {
+                                store.selectLocalModel(model.id)
+                            }
+                        }
+                        Divider()
+                        Button("Добавить GGUF…", systemImage: "plus") { showModelImporter = true }
+                    } label: {
+                        Label(store.selectedLocalModel?.name ?? "Нет модели", systemImage: "circle.hexagongrid")
+                            .font(.caption.weight(.medium)).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.disabled(store.localWorking || store.importingModel)
+                    Menu {
+                        ForEach(store.localImageModels) { model in
+                            Button(model.name, systemImage: store.selectedLocalImageModel?.id == model.id ? "checkmark" : "circle") {
+                                store.selectLocalImageModel(model.id)
+                            }
+                        }
+                        Divider()
+                        Button("Добавить Core ML…", systemImage: "plus") { showImageModelImporter = true }
+                    } label: {
+                        Label(store.selectedLocalImageModel?.name ?? "Нет модели фото", systemImage: "photo")
+                            .font(.caption.weight(.medium)).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.disabled(store.localWorking || store.importingModel)
                 } else {
                     modelMenu(image: false).frame(maxWidth: .infinity)
                     modelMenu(image: true).frame(maxWidth: .infinity)
@@ -189,6 +253,15 @@ struct RemoteChatView: View {
             }
             if !store.offlineMode && store.draft.hasPrefix("/image") { imagePromptMenu }
             HStack(alignment: .bottom, spacing: 10) {
+                Menu {
+                    Button("Файл…", systemImage: "doc") { showAttachmentImporter = true }
+                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                        Label("Фото…", systemImage: "photo")
+                    }
+                } label: {
+                    Image(systemName: "plus").font(.system(size: 20))
+                        .frame(width: 38, height: 42)
+                }
                 TextField(store.offlineMode ? "Вопрос для iPhone…" : "Задача, вопрос или /image…", text: $store.draft, axis: .vertical)
                     .lineLimit(1...6).focused($composerFocused).submitLabel(.send)
                     .onSubmit { Task { await store.send() } }
@@ -198,7 +271,7 @@ struct RemoteChatView: View {
                     Image(systemName: "arrow.up").font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.white).frame(width: 42, height: 42)
                         .background(.black, in: Circle())
-                }.disabled(store.sending || store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }.disabled(store.sending || (store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.pendingUpload == nil))
             }
         }.padding(.horizontal, 14).padding(.vertical, 10)
             .background(.regularMaterial)
@@ -213,7 +286,13 @@ struct RemoteChatView: View {
                     Task { await store.selectModel(model.id, image: image) }
                 }
             }
-            if choices.isEmpty { Text("Модели на Mac не найдены") }
+            if choices.isEmpty {
+                if store.snapshot == nil { Text("Каталог Mac ещё не загружен") }
+                else { Text("На Mac нет доступных моделей") }
+                Button("Обновить список", systemImage: "arrow.clockwise") {
+                    Task { await store.refresh() }
+                }
+            }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: image ? "photo" : "circle.hexagongrid")
@@ -279,6 +358,7 @@ struct RemoteChatView: View {
                 } else {
                     Label(attachment.name, systemImage: attachment.kind == "image" ? "photo" : "doc")
                         .font(.caption).foregroundStyle(.secondary)
+                        .onAppear { store.loadLocalImage(attachment.id) }
                 }
             }
             if message.status == "offline" {

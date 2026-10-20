@@ -60,13 +60,16 @@ public struct RemoteRequest: Codable, Sendable {
     public var messageID: UUID?
     public var attachmentID: UUID?
     public var deviceName: String?
+    public var uploadName: String?
+    public var uploadData: Data?
 
     public init(operation: String, text: String? = nil, interactionID: UUID? = nil,
                 answer: String? = nil, messageID: UUID? = nil, attachmentID: UUID? = nil,
-                deviceName: String? = nil) {
+                deviceName: String? = nil, uploadName: String? = nil, uploadData: Data? = nil) {
         self.operation = operation; self.text = text; self.interactionID = interactionID
         self.answer = answer; self.messageID = messageID; self.attachmentID = attachmentID
         self.deviceName = deviceName
+        self.uploadName = uploadName; self.uploadData = uploadData
     }
 }
 

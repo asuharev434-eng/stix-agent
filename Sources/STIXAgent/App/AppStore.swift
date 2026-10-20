@@ -201,6 +201,9 @@ final class AppStore: ObservableObject {
         safe.text = vault.redact(safe.text)
         safe.detail = safe.detail.map(vault.redact)
         chats[i].messages.append(safe); chats[i].updatedAt = Date(); save()
+        if safe.role == "assistant", canPersist, chats[i].isMobile == true {
+            remoteChat.publishAssistantUpdate(chatID: id)
+        }
     }
     func editMessage(_ messageID: UUID, chatID: UUID, _ edit: (inout ChatMessage) -> Void) {
         guard let i = index(chatID), let j = chats[i].messages.firstIndex(where: { $0.id == messageID }) else { return }

@@ -3,6 +3,16 @@ import SwiftUI
 import Security
 import Network
 import Photos
+import PhotosUI
+import UniformTypeIdentifiers
+import UserNotifications
+
+struct MobileDraftUpload: Identifiable, Sendable {
+    let id = UUID()
+    let name: String
+    let data: Data
+    let isImage: Bool
+}
 
 @MainActor
 final class RemoteChatStore: ObservableObject {
@@ -12,6 +22,14 @@ final class RemoteChatStore: ObservableObject {
     @Published private(set) var offlineMode = false
     @Published private(set) var localMessages: [RemoteMessage] = []
     @Published private(set) var localWorking = false
+    @Published private(set) var localPartial = ""
+    @Published private(set) var localImageProgress: Double?
+    @Published private(set) var localModels: [LocalModelChoice] = []
+    @Published private(set) var selectedLocalModelID: String?
+    @Published private(set) var localImageModels: [LocalImageModelChoice] = []
+    @Published private(set) var selectedLocalImageModelID: String?
+    @Published private(set) var importingModel = false
+    @Published private(set) var pendingUpload: MobileDraftUpload?
     @Published var error: String?
     @Published var draft = ""
     @Published private(set) var sending = false
@@ -23,7 +41,17 @@ final class RemoteChatStore: ObservableObject {
     private let cloud = RemoteCloudMailbox()
     private var preferCloud = false
     private var cloudBusy = false
-    private var pendingSend: (text: String, id: UUID)?
+    private var pendingSend: (text: String, uploadID: UUID?, id: UUID)?
+    private var localGeneration: LocalGeneration?
+    private var localImageGeneration: LocalImageGeneration?
+    private var localImagePaths: [UUID: String] = [:]
+    private var subscribedToCloud = false
+    var selectedLocalModel: LocalModelChoice? {
+        localModels.first(where: { $0.id == selectedLocalModelID }) ?? localModels.first
+    }
+    var selectedLocalImageModel: LocalImageModelChoice? {
+        localImageModels.first(where: { $0.id == selectedLocalImageModelID }) ?? localImageModels.first
+    }
     var displayMessages: [RemoteMessage] {
         offlineMode ? localMessages : (snapshot?.messages ?? [])
     }
@@ -31,6 +59,17 @@ final class RemoteChatStore: ObservableObject {
     init() {
         let saved = LocalMobileState.load()
         offlineMode = saved.offlineMode
+        localModels = LocalModelLibrary.available()
+        selectedLocalModelID = saved.selectedModelID
+        localImageModels = LocalImageModelLibrary.available()
+        selectedLocalImageModelID = saved.selectedImageModelID
+        localImagePaths = saved.imagePaths ?? [:]
+        let recentImageIDs = Set(saved.messages.suffix(24).flatMap { $0.attachments.map(\.id) })
+        for (id, path) in localImagePaths where recentImageIDs.contains(id) {
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: path)), let image = UIImage(data: data) {
+                imageData[id] = data; images[id] = image
+            }
+        }
         localMessages = saved.messages.map { message in
             guard message.status == "queued" else { return message }
             return RemoteMessage(id: message.id, role: message.role, text: message.text,
@@ -46,6 +85,14 @@ final class RemoteChatStore: ObservableObject {
     func start() async {
         guard isPaired, !offlineMode else { return }
         await refresh()
+        if !subscribedToCloud, let cloud {
+            do {
+                try await cloud.installChangeSubscription(id: "stix-remote-phone-v1")
+                UIApplication.shared.registerForRemoteNotifications()
+                _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+                subscribedToCloud = true
+            } catch { self.error = "Уведомления iPhone: \(error.localizedDescription)" }
+        }
         if polling == nil {
             polling = Task { [weak self] in
                 while !Task.isCancelled {
@@ -72,8 +119,23 @@ final class RemoteChatStore: ObservableObject {
     func refresh() async {
         guard !offlineMode, let code else { return }
         do {
+            let known = Set(snapshot?.messages.map(\.id) ?? [])
             let response = try await perform(.init(operation: "snapshot"), with: code)
-            if let snapshot = response.snapshot { self.snapshot = snapshot; loadImages(in: snapshot) }
+            if let error = response.error {
+                throw NSError(domain: "STIXRemote", code: 8,
+                              userInfo: [NSLocalizedDescriptionKey: error])
+            }
+            guard let snapshot = response.snapshot else { throw RemoteChatError.invalidFrame }
+            self.snapshot = snapshot; loadImages(in: snapshot)
+            if !known.isEmpty, UIApplication.shared.applicationState != .active,
+               let latest = snapshot.messages.last(where: { $0.role == "assistant" && !known.contains($0.id) }) {
+                let content = UNMutableNotificationContent()
+                content.title = "STIX Agent · MacBook"
+                content.body = String(latest.text.prefix(180))
+                content.sound = .default
+                try? await UNUserNotificationCenter.current().add(
+                    UNNotificationRequest(identifier: latest.id.uuidString, content: content, trigger: nil))
+            }
             connected = true; error = nil
         } catch { connected = false; self.error = "Mac недоступен: \(error.localizedDescription)" }
     }
@@ -96,52 +158,210 @@ final class RemoteChatStore: ObservableObject {
     func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if offlineMode { await sendLocally(text); return }
-        guard !text.isEmpty, let code, !sending else { return }
+        guard !text.isEmpty || pendingUpload != nil, let code, !sending else { return }
         let requestID: UUID
-        if let pendingSend, pendingSend.text == text { requestID = pendingSend.id }
+        if let pendingSend, pendingSend.text == text, pendingSend.uploadID == pendingUpload?.id { requestID = pendingSend.id }
         else { requestID = UUID() }
-        pendingSend = (text, requestID)
+        pendingSend = (text, pendingUpload?.id, requestID)
         sending = true
         defer { sending = false }
         do {
-            let response = try await perform(.init(operation: "send", text: text), with: code, requestID: requestID)
+            let response = try await perform(.init(operation: "send", text: text,
+                                                   uploadName: pendingUpload?.name,
+                                                   uploadData: pendingUpload?.data), with: code, requestID: requestID)
             if let error = response.error { throw NSError(domain: "STIXRemote", code: 1, userInfo: [NSLocalizedDescriptionKey: error]) }
-            draft = ""; pendingSend = nil
+            draft = ""; pendingUpload = nil; pendingSend = nil
             if let snapshot = response.snapshot { self.snapshot = snapshot; loadImages(in: snapshot) }
             connected = true; error = nil
         } catch { self.error = "Не удалось отправить: \(error.localizedDescription)" }
     }
 
+    func attachFile(_ source: URL) async {
+        guard !sending else { return }
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        do {
+            let size = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard size > 0, size <= 8 * 1024 * 1024 else { throw LocalUploadError.invalidSize }
+            let name = source.lastPathComponent
+            let data = try Data(contentsOf: source)
+            guard data.count == size else { throw LocalUploadError.invalidSize }
+            pendingUpload = .init(name: name, data: data,
+                                  isImage: ["png", "jpg", "jpeg", "webp", "heic", "gif"].contains(source.pathExtension.lowercased()))
+            error = nil
+        } catch { self.error = "Вложение: \(error.localizedDescription)" }
+    }
+
+    func attachPhoto(_ item: PhotosPickerItem) async {
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  !data.isEmpty, data.count <= 8 * 1024 * 1024 else { throw LocalUploadError.invalidSize }
+            let suffix = item.supportedContentTypes.first(where: { ["png", "jpg", "jpeg", "heic", "webp"].contains($0.preferredFilenameExtension ?? "") })?.preferredFilenameExtension ?? "jpg"
+            pendingUpload = .init(name: "Фото-\(UUID().uuidString.prefix(8)).\(suffix)", data: data, isImage: true)
+            error = nil
+        } catch { self.error = "Фото: \(error.localizedDescription)" }
+    }
+
+    func clearUpload() { pendingUpload = nil; pendingSend = nil }
+
     private func sendLocally(_ text: String) async {
-        guard !text.isEmpty, !sending else { return }
-        if text.hasPrefix("/") && text != "/help" {
+        guard !text.isEmpty || pendingUpload != nil, !sending else { return }
+        let localCommands = text == "/help" || text == "/models" || text == "/time" ||
+            text.hasPrefix("/calc ") || text.hasPrefix("/image ")
+        if text.hasPrefix("/") && !localCommands {
             error = "Команда \(text.split(separator: " ").first.map(String.init) ?? text) доступна на MacBook. Выберите MacBook над чатом; запрос остался в поле ввода."
             return
         }
+        let upload = pendingUpload
         sending = true
         draft = ""
-        localMessages.append(.init(id: UUID(), role: "user", text: text,
+        pendingUpload = nil
+        let input = upload.map { text + (text.isEmpty ? "" : "\n") + "📎 \($0.name)" } ?? text
+        localMessages.append(.init(id: UUID(), role: "user", text: input,
                                    status: "offline", createdAt: .now, attachments: []))
         if text == "/help" {
             localMessages.append(.init(id: UUID(), role: "assistant",
-                text: "На iPhone доступны вопросы и генерация текста через локальную модель. Для /image и инструментов выберите MacBook над чатом. Команды не ставятся в очередь.",
+                text: "На iPhone работают текст, /image, /calc, /time и анализ выбранного файла или фото. /models выбирает и добавляет GGUF. Для инструментов Mac выберите MacBook над чатом.",
                 status: "offline", createdAt: .now, attachments: []))
             persistLocalState(); sending = false
             return
         }
+        if text == "/models" {
+            localMessages.append(.init(id: UUID(), role: "assistant",
+                text: "Модели выбираются над полем ввода. Можно добавить GGUF до 3 ГБ и совместимую папку Core ML до 4 ГБ. Текст: \(localModels.map(\.name).joined(separator: ", ")). Изображения: \(localImageModels.map(\.name).joined(separator: ", ")).",
+                status: "offline", createdAt: .now, attachments: []))
+            persistLocalState(); sending = false
+            return
+        }
+        if text == "/time" || text.hasPrefix("/calc ") {
+            do {
+                let answer = try LocalPhoneTools.answer(text) ?? "Команда не найдена"
+                localMessages.append(.init(id: UUID(), role: "assistant", text: answer,
+                    status: "offline", createdAt: .now, attachments: []))
+            } catch {
+                localMessages.append(.init(id: UUID(), role: "assistant", text: error.localizedDescription,
+                    status: "error", createdAt: .now, attachments: []))
+            }
+            persistLocalState(); sending = false
+            return
+        }
         localWorking = true
+        localPartial = ""
+        localImageProgress = nil
         error = nil
         persistLocalState()
-        defer { localWorking = false; sending = false }
+        defer { localWorking = false; sending = false; localGeneration = nil; localImageGeneration = nil;
+                localPartial = ""; localImageProgress = nil }
         do {
-            let answer = try await LocalLlamaEngine.respond(to: localMessages.filter { $0.status != "not_sent" })
-            localMessages.append(.init(id: UUID(), role: "assistant", text: answer,
+            if text.hasPrefix("/image ") {
+                try await generateLocalImage(prompt: String(text.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines),
+                                             sourceImage: upload?.isImage == true ? upload?.data : nil)
+                persistLocalState()
+                return
+            }
+            guard let model = selectedLocalModel else { throw LocalLlamaError.modelMissing }
+            var inputMessages = localMessages.filter { $0.status != "not_sent" }
+            if let upload, let last = inputMessages.last {
+                let description = try await LocalPhoneTools.describe(upload)
+                inputMessages[inputMessages.count - 1] = .init(id: last.id, role: last.role,
+                    text: last.text + "\n\nСодержимое вложения:\n" + description,
+                    status: last.status, createdAt: last.createdAt, attachments: [])
+            }
+            let generation = LocalLlamaEngine.start(messages: inputMessages,
+                                                    modelURL: model.url)
+            localGeneration = generation
+            for try await partial in generation.stream { localPartial = partial }
+            guard !localPartial.isEmpty else { throw LocalLlamaError.emptyResponse }
+            localMessages.append(.init(id: UUID(), role: "assistant", text: localPartial,
                                        status: "offline", createdAt: .now, attachments: []))
+        } catch is CancellationError {
+            if !localPartial.isEmpty {
+                localMessages.append(.init(id: UUID(), role: "assistant", text: localPartial,
+                                           status: "stopped", createdAt: .now, attachments: []))
+            }
         } catch {
             localMessages.append(.init(id: UUID(), role: "assistant", text: error.localizedDescription,
                                        status: "error", createdAt: .now, attachments: []))
         }
         persistLocalState()
+    }
+
+    private func generateLocalImage(prompt: String, sourceImage: Data?) async throws {
+        guard !prompt.isEmpty else { throw LocalImageError.rejected }
+        guard let imageModel = selectedLocalImageModel else { throw LocalImageError.modelMissing }
+        if sourceImage != nil && !imageModel.supportsEditing { throw LocalImageError.rejected }
+        var adapted = prompt
+        if let model = selectedLocalModel {
+            let request = RemoteMessage(id: UUID(), role: "user",
+                text: "Translate this image prompt into concise, vivid English for Stable Diffusion. Output only the English prompt: \(prompt)",
+                status: nil, createdAt: .now, attachments: [])
+            let generation = LocalLlamaEngine.start(messages: [request], modelURL: model.url,
+                                                    imagePrompt: true)
+            localGeneration = generation
+            for try await partial in generation.stream { adapted = partial }
+            localGeneration = nil
+        }
+        let imageGeneration = LocalImageEngine.start(prompt: adapted, resources: imageModel.url,
+                                                     sourceImage: sourceImage)
+        localImageGeneration = imageGeneration
+        for try await event in imageGeneration.stream {
+            switch event {
+            case .progress(let step, let total): localImageProgress = Double(step) / Double(max(1, total))
+            case .image(let url):
+                let id = UUID()
+                let data = try Data(contentsOf: url)
+                guard let image = UIImage(data: data) else { throw LocalImageError.saveFailed }
+                localImagePaths[id] = url.path
+                imageData[id] = data; images[id] = image
+                localMessages.append(.init(id: UUID(), role: "assistant", text: "Изображение создано на iPhone.",
+                    status: "offline", createdAt: .now,
+                    attachments: [.init(id: id, name: url.lastPathComponent, kind: "image")]))
+            }
+        }
+    }
+
+    func stopLocalGeneration() { localGeneration?.cancel(); localImageGeneration?.cancel() }
+
+    func selectLocalModel(_ id: String) {
+        guard !localWorking, localModels.contains(where: { $0.id == id }) else { return }
+        selectedLocalModelID = id
+        persistLocalState()
+    }
+
+    func importLocalModel(_ url: URL) async {
+        guard !importingModel, !localWorking else { return }
+        importingModel = true
+        defer { importingModel = false }
+        do {
+            let model = try await Task.detached(priority: .userInitiated) {
+                try LocalModelLibrary.importGGUF(from: url)
+            }.value
+            localModels = LocalModelLibrary.available()
+            selectedLocalModelID = model.id
+            persistLocalState()
+            error = nil
+        } catch { self.error = "Импорт модели: \(error.localizedDescription)" }
+    }
+
+    func selectLocalImageModel(_ id: String) {
+        guard !localWorking, localImageModels.contains(where: { $0.id == id }) else { return }
+        selectedLocalImageModelID = id
+        persistLocalState()
+    }
+
+    func importLocalImageModel(_ url: URL) async {
+        guard !importingModel, !localWorking else { return }
+        importingModel = true
+        defer { importingModel = false }
+        do {
+            let model = try await Task.detached(priority: .userInitiated) {
+                try LocalImageModelLibrary.importCoreML(from: url)
+            }.value
+            localImageModels = LocalImageModelLibrary.available()
+            selectedLocalImageModelID = model.id
+            persistLocalState()
+            error = nil
+        } catch { self.error = "Импорт модели изображений: \(error.localizedDescription)" }
     }
 
     func answer(_ answer: String, interaction: RemoteInteraction) async {
@@ -181,12 +401,18 @@ final class RemoteChatStore: ObservableObject {
 
     private func persistLocalState() {
         do {
-            try LocalMobileState(offlineMode: offlineMode, messages: localMessages).save()
+            try LocalMobileState(offlineMode: offlineMode, messages: localMessages,
+                                 selectedModelID: selectedLocalModelID,
+                                 selectedImageModelID: selectedLocalImageModelID,
+                                 imagePaths: localImagePaths).save()
         } catch { self.error = "Не удалось сохранить локальную историю: \(error.localizedDescription)" }
     }
 
     func saveImage(_ attachmentID: UUID) async throws {
-        guard let data = imageData[attachmentID] else {
+        let data = imageData[attachmentID] ?? localImagePaths[attachmentID].flatMap {
+            try? Data(contentsOf: URL(fileURLWithPath: $0))
+        }
+        guard let data else {
             throw NSError(domain: "STIXRemote", code: 6, userInfo: [NSLocalizedDescriptionKey:
                 "Изображение ещё загружается. Попробуйте снова через несколько секунд."])
         }
@@ -199,6 +425,15 @@ final class RemoteChatStore: ObservableObject {
             let request = PHAssetCreationRequest.forAsset()
             request.addResource(with: .photo, data: data, options: nil)
         }
+    }
+
+    func loadLocalImage(_ attachmentID: UUID) {
+        guard images[attachmentID] == nil,
+              let path = localImagePaths[attachmentID],
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let image = UIImage(data: data) else { return }
+        imageData[attachmentID] = data
+        images[attachmentID] = image
     }
 
     private func loadImages(in snapshot: RemoteSnapshot) {
@@ -265,6 +500,9 @@ final class RemoteChatStore: ObservableObject {
 private struct LocalMobileState: Codable {
     var offlineMode: Bool = false
     var messages: [RemoteMessage] = []
+    var selectedModelID: String?
+    var selectedImageModelID: String?
+    var imagePaths: [UUID: String]?
 
     private static var url: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -286,6 +524,11 @@ private struct LocalMobileState: Codable {
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                                               ofItemAtPath: file.path)
     }
+}
+
+private enum LocalUploadError: LocalizedError {
+    case invalidSize
+    var errorDescription: String? { "Файл должен быть от 1 байта до 8 МБ." }
 }
 
 private enum RemoteKeychain {
