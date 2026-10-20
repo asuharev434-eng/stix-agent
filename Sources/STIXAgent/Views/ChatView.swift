@@ -15,7 +15,11 @@ struct ChatView: View {
         NavigationSplitView(columnVisibility: $visibility) {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Text("STIX").font(.system(size: store.textSize(16), weight: .semibold)).tracking(2)
+                    HStack(spacing: 9) {
+                        Image(systemName: "asterisk")
+                            .font(.system(size: store.textSize(17), weight: .semibold))
+                        Text("STIX").font(.system(size: store.textSize(17), weight: .bold)).tracking(2.1)
+                    }
                     Spacer()
                     Menu {
                         Button("Новый чат · агент") { store.newChat() }
@@ -32,8 +36,18 @@ struct ChatView: View {
                     if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary) }
                 }.font(.system(size: store.textSize(12))).padding(11).agentCard(cornerRadius: 13).padding(.horizontal, 14)
                 ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(visibleChats) { chat in
+                    LazyVStack(spacing: 5) {
+                        if visibleChats.contains(where: { $0.pinned == true }) {
+                            sidebarSection("ЗАКРЕПЛЕНО", count: visibleChats.filter { $0.pinned == true }.count)
+                        }
+                        ForEach(visibleChats.filter { $0.pinned == true }) { chat in
+                            SidebarChatRow(chat: chat)
+                        }
+                        if visibleChats.contains(where: { $0.pinned != true }) {
+                            sidebarSection("ИСТОРИЯ", count: visibleChats.filter { $0.pinned != true }.count)
+                                .padding(.top, visibleChats.contains(where: { $0.pinned == true }) ? 13 : 0)
+                        }
+                        ForEach(visibleChats.filter { $0.pinned != true }) { chat in
                             SidebarChatRow(chat: chat)
                         }
                         if visibleChats.isEmpty { Text("Ничего не найдено").font(.system(size: store.textSize(12))).foregroundStyle(.secondary).padding(.top, 16) }
@@ -47,8 +61,11 @@ struct ChatView: View {
                 .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 300)
         } detail: {
             VStack(spacing: 0) {
-                HStack {
-                    Text(store.currentChat?.title ?? "Новый чат").font(.system(size: store.textSize(13), weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(store.currentChat?.title ?? "Новый чат")
+                            .font(.system(size: store.textSize(16), weight: .semibold))
+                            .lineLimit(1)
                     if let descriptor = store.models.first(where: { $0.id == store.currentChat?.model }), TinyTextPolicy.applies(descriptor) {
                         Label("Учебная · короткие вопросы · без памяти и инструментов", systemImage: "text.bubble")
                             .font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
@@ -56,11 +73,17 @@ struct ChatView: View {
                         Label("Без инструкций и памяти", systemImage: "circle.dotted")
                             .font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
                     }
+                    }
                     Spacer()
                     if let folder = store.currentChat?.folder {
-                        Button { NSWorkspace.shared.open(URL(fileURLWithPath: folder)) } label: { Label(URL(fileURLWithPath: folder).lastPathComponent, systemImage: "folder").lineLimit(1) }.buttonStyle(.plain).font(.system(size: store.textSize(12))).foregroundStyle(.secondary)
+                        Button { NSWorkspace.shared.open(URL(fileURLWithPath: folder)) } label: {
+                            Label(URL(fileURLWithPath: folder).lastPathComponent, systemImage: "folder")
+                                .lineLimit(1).padding(.horizontal, 11).padding(.vertical, 7)
+                                .agentCard(cornerRadius: 11)
+                        }.buttonStyle(.plain).font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
                     }
-                }.padding(.horizontal, 28).frame(height: 50)
+                }.padding(.horizontal, 30).frame(height: 64)
+                    .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.06)).frame(height: 0.5) }
                 if let chat = store.currentChat {
                     ScrollViewReader { proxy in
                         ScrollView {
@@ -85,7 +108,7 @@ struct ChatView: View {
                 }
                 TaskQueueView().frame(maxWidth: 764).padding(.horizontal, 28)
                 ComposerView().frame(maxWidth: 820).padding(.horizontal, 28).padding(.bottom, 24)
-            }.background(Color(nsColor: .windowBackgroundColor))
+            }.background(Color(nsColor: .textBackgroundColor))
                 .onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
                     for provider in providers {
                         _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in store.addFiles([url]) } } }
@@ -94,6 +117,16 @@ struct ChatView: View {
         }.alert("STIX Agent", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("Понятно") { store.error = nil }
         } message: { Text(store.error ?? "") }
+    }
+    private func sidebarSection(_ title: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(title).tracking(1.1)
+            Spacer()
+            Text("\(count)").monospacedDigit()
+        }.font(.system(size: store.textSize(10), weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            .accessibilityElement(children: .combine)
     }
     private var reasoningCard: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -119,7 +152,8 @@ struct ChatView: View {
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "asterisk").font(.system(size: store.textSize(26), weight: .medium)).frame(width: 62, height: 62).agentGlass(cornerRadius: 22).padding(.bottom, 10)
-            Text(store.currentChat?.isClean == true ? "Чистый чат" : "Что сделаем?").font(.system(size: store.textSize(32), weight: .medium)).tracking(-0.7)
+            Text(store.currentChat?.isClean == true ? "Чистый чат" : "Что сделаем?")
+                .font(.system(size: store.textSize(34), weight: .semibold)).tracking(-0.8)
             Text(store.currentChat?.isClean == true ? "Начало с 0: без инструкций агента, памяти и инструментов. Контекст составят только сообщения этого чата." : "Файлы, небольшой код, повседневные задачи.\nВсё начинается с сообщения.")
                 .font(.system(size: store.textSize(15))).foregroundStyle(.secondary).lineSpacing(5)
             if store.currentChat?.isClean != true {

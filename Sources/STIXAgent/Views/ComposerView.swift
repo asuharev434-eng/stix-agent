@@ -27,7 +27,9 @@ struct ComposerView: View {
                 ?? store.imageModelName(id)
         }
         let id = store.currentChat?.model ?? ""
-        return id.isEmpty ? "Выбрать модель" : store.models.first(where: { $0.id == id })?.name ?? id
+        if id.isEmpty { return "Выбрать модель" }
+        if let name = store.models.first(where: { $0.id == id })?.name { return name }
+        return store.models.isEmpty ? "Загружаю модели…" : id
     }
     var body: some View {
         composer
@@ -54,6 +56,7 @@ struct ComposerView: View {
                 HStack(spacing: 8) { mobileImageModelControl; imagePromptModelControl }
             }
             footer
+            Divider().opacity(0.55)
             HStack(spacing: 14) {
                 questionControl
                 Divider().frame(height: 14)
@@ -61,7 +64,7 @@ struct ComposerView: View {
                     .font(.system(size: store.textSize(11)))
                     .help("Показывать рассуждения модели во время ответа")
             }
-        }.padding(18).agentGlass(cornerRadius: 28)
+        }.padding(18).agentGlass(cornerRadius: 25)
             .onAppear { focused = true }
     }
     @ViewBuilder private var attachmentsRow: some View {

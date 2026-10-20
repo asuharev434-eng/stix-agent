@@ -35,22 +35,32 @@ struct RemoteChatView: View {
                 deviceSelector
                 if store.offlineMode {
                     HStack(spacing: 8) {
-                        Image(systemName: "iphone")
-                        Text("Локально на iPhone · \(store.selectedLocalModel?.name ?? LocalLlamaEngine.modelName)")
+                        Image(systemName: "iphone.gen3")
+                            .font(.subheadline.weight(.semibold))
+                        Text("На iPhone")
+                            .fontWeight(.semibold)
+                        Text("· \(store.selectedLocalModel?.name ?? LocalLlamaEngine.modelName)")
+                            .lineLimit(1)
                         Spacer()
-                    }.font(.caption).padding(12).background(.blue.opacity(0.08))
+                    }.font(.caption).foregroundStyle(.primary)
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
+                        .padding(.horizontal, 16).padding(.vertical, 6)
                 } else {
                     macConnectionStatus
                 }
                 if let error = store.error {
                     HStack(spacing: 8) {
-                        Image(systemName: "wifi.exclamationmark")
+                        Image(systemName: "exclamationmark.triangle.fill")
                         Text(error).lineLimit(2)
                         Spacer()
                         if !store.offlineMode {
                             Button("Повторить") { Task { await store.refresh() } }
                         }
-                    }.font(.caption).padding(12).background(.orange.opacity(0.12))
+                    }.font(.caption).foregroundStyle(.orange)
+                        .padding(12)
+                        .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 16).padding(.bottom, 6)
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -65,8 +75,9 @@ struct RemoteChatView: View {
                                 interactionView(interaction).id(interaction.id)
                             }
                             Color.clear.frame(height: 1).id("bottom")
-                        }.padding(.horizontal, 16).padding(.vertical, 24)
+                        }.padding(.horizontal, 20).padding(.vertical, 22)
                     }
+                    .scrollDismissesKeyboard(.interactively)
                     .onChange(of: store.displayMessages.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
                     }
@@ -187,10 +198,11 @@ struct RemoteChatView: View {
         }
         .font(.caption.weight(.medium))
         .foregroundStyle(available ? .green : checking ? .secondary : .orange)
-        .padding(.horizontal, 16).padding(.vertical, 9)
-        .frame(maxWidth: .infinity)
-        .background(available ? Color.green.opacity(0.08) :
-                    checking ? Color.secondary.opacity(0.08) : Color.orange.opacity(0.1))
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(available ? Color.green.opacity(0.09) :
+                    checking ? Color.secondary.opacity(0.08) : Color.orange.opacity(0.1),
+                    in: Capsule())
+        .padding(.horizontal, 16).padding(.vertical, 6)
         .accessibilityElement(children: .combine)
     }
 
@@ -204,7 +216,8 @@ struct RemoteChatView: View {
             }
         }
         .padding(4)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .accessibilityLabel("Выбор устройства для ответа")
@@ -215,22 +228,44 @@ struct RemoteChatView: View {
         Button(action: action) {
             Label(title, systemImage: icon)
                 .font(.subheadline.weight(selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Color(uiColor: .systemBackground) : Color.primary)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(selected ? Color(uiColor: .secondarySystemGroupedBackground) : .clear,
-                            in: RoundedRectangle(cornerRadius: 14))
+                .padding(.vertical, 11)
+                .background(selected ? Color.primary : .clear,
+                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: "sparkle").font(.largeTitle).padding(.bottom, 10)
-            Text("Что сделаем?").font(.largeTitle.weight(.medium))
+        VStack(alignment: .leading, spacing: 14) {
+            Image(systemName: "asterisk")
+                .font(.system(size: 27, weight: .medium))
+                .frame(width: 58, height: 58)
+                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 19))
+                .padding(.bottom, 8)
+            Text("Что сделаем?").font(.system(size: 32, weight: .semibold, design: .rounded))
             Text(store.offlineMode ? "Текст и /image работают на iPhone без Mac и интернета. Для инструментов Mac выберите MacBook." : "Чат с вашим Mac. Попросите агента выполнить задачу или введите / для команд.")
-                .foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 80)
+                .font(.subheadline).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                quickStart("Команды", icon: "command", text: "/")
+                quickStart("Изображение", icon: "photo", text: "/image ")
+            }.padding(.top, 10)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 54)
+    }
+
+    private func quickStart(_ title: String, icon: String, text: String) -> some View {
+        Button {
+            store.draft = text
+            composerFocused = true
+        } label: {
+            Label(title, systemImage: icon).font(.caption.weight(.medium))
+                .padding(.horizontal, 13).padding(.vertical, 10)
+                .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
+        }.buttonStyle(.plain)
     }
 
     private var composer: some View {
@@ -297,8 +332,16 @@ struct RemoteChatView: View {
                         .background(.black, in: Circle())
                 }.disabled(store.sending || (store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.pendingUpload == nil))
             }
-        }.padding(.horizontal, 14).padding(.vertical, 10)
-            .background(.regularMaterial)
+        }.padding(14)
+            .tint(.primary)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
+                    .allowsHitTesting(false)
+            }
+            .shadow(color: .black.opacity(0.07), radius: 16, y: -3)
+            .padding(.horizontal, 10).padding(.bottom, 7)
     }
 
     private func modelMenu(image: Bool) -> some View {
@@ -361,8 +404,9 @@ struct RemoteChatView: View {
                 Label(message.text, systemImage: message.status == "running" ? "hourglass" : "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
             } else if message.role == "user" {
-                Text(message.text).font(.body).padding(13)
-                    .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 19))
+                Text(message.text).font(.body).padding(.horizontal, 16).padding(.vertical, 12)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 21, style: .continuous))
             } else {
                 Text(.init(message.text)).font(.body).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
