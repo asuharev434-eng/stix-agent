@@ -7,7 +7,7 @@ struct STIXRemoteApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if store.isPaired { RemoteChatView() }
+                if store.isPaired || store.offlineMode { RemoteChatView() }
                 else { PairingView() }
             }
             .environmentObject(store)

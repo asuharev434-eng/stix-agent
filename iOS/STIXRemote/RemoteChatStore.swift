@@ -9,6 +9,9 @@ final class RemoteChatStore: ObservableObject {
     @Published private(set) var isPaired = false
     @Published private(set) var snapshot: RemoteSnapshot?
     @Published private(set) var connected = false
+    @Published private(set) var offlineMode = false
+    @Published private(set) var localMessages: [RemoteMessage] = []
+    @Published private(set) var localWorking = false
     @Published var error: String?
     @Published var draft = ""
     @Published private(set) var sending = false
@@ -21,15 +24,27 @@ final class RemoteChatStore: ObservableObject {
     private var preferCloud = false
     private var cloudBusy = false
     private var pendingSend: (text: String, id: UUID)?
+    var displayMessages: [RemoteMessage] {
+        offlineMode ? localMessages : (snapshot?.messages ?? [])
+    }
 
     init() {
+        let saved = LocalMobileState.load()
+        offlineMode = saved.offlineMode
+        localMessages = saved.messages.map { message in
+            guard message.status == "queued" else { return message }
+            return RemoteMessage(id: message.id, role: message.role, text: message.text,
+                                 status: "not_sent", createdAt: message.createdAt,
+                                 attachments: message.attachments)
+        }
+        if localMessages.contains(where: { $0.status == "not_sent" }) { persistLocalState() }
         if let stored = RemoteKeychain.read(), let decoded = try? JSONDecoder().decode(RemotePairingCode.self, from: stored) {
             code = decoded; isPaired = true
         }
     }
 
     func start() async {
-        guard isPaired else { return }
+        guard isPaired, !offlineMode else { return }
         await refresh()
         if polling == nil {
             polling = Task { [weak self] in
@@ -49,12 +64,13 @@ final class RemoteChatStore: ObservableObject {
             guard let snapshot = response.snapshot else { throw RemoteChatError.invalidFrame }
             try RemoteKeychain.save(JSONEncoder().encode(code))
             self.code = code; self.snapshot = snapshot; isPaired = true; connected = true; error = nil
+            offlineMode = false; persistLocalState()
             await start()
         } catch { self.error = error.localizedDescription }
     }
 
     func refresh() async {
-        guard let code else { return }
+        guard !offlineMode, let code else { return }
         do {
             let response = try await perform(.init(operation: "snapshot"), with: code)
             if let snapshot = response.snapshot { self.snapshot = snapshot; loadImages(in: snapshot) }
@@ -62,8 +78,24 @@ final class RemoteChatStore: ObservableObject {
         } catch { connected = false; self.error = "Mac недоступен: \(error.localizedDescription)" }
     }
 
+    func useOfflineMode() {
+        polling?.cancel(); polling = nil
+        offlineMode = true; error = nil
+        persistLocalState()
+    }
+
+    func useMacMode() async {
+        guard isPaired else {
+            offlineMode = false; persistLocalState()
+            return
+        }
+        offlineMode = false; persistLocalState()
+        await start()
+    }
+
     func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if offlineMode { await sendLocally(text); return }
         guard !text.isEmpty, let code, !sending else { return }
         let requestID: UUID
         if let pendingSend, pendingSend.text == text { requestID = pendingSend.id }
@@ -78,6 +110,38 @@ final class RemoteChatStore: ObservableObject {
             if let snapshot = response.snapshot { self.snapshot = snapshot; loadImages(in: snapshot) }
             connected = true; error = nil
         } catch { self.error = "Не удалось отправить: \(error.localizedDescription)" }
+    }
+
+    private func sendLocally(_ text: String) async {
+        guard !text.isEmpty, !sending else { return }
+        if text.hasPrefix("/") && text != "/help" {
+            error = "Команда \(text.split(separator: " ").first.map(String.init) ?? text) доступна на MacBook. Выберите MacBook над чатом; запрос остался в поле ввода."
+            return
+        }
+        sending = true
+        draft = ""
+        localMessages.append(.init(id: UUID(), role: "user", text: text,
+                                   status: "offline", createdAt: .now, attachments: []))
+        if text == "/help" {
+            localMessages.append(.init(id: UUID(), role: "assistant",
+                text: "На iPhone доступны вопросы и генерация текста через локальную модель. Для /image и инструментов выберите MacBook над чатом. Команды не ставятся в очередь.",
+                status: "offline", createdAt: .now, attachments: []))
+            persistLocalState(); sending = false
+            return
+        }
+        localWorking = true
+        error = nil
+        persistLocalState()
+        defer { localWorking = false; sending = false }
+        do {
+            let answer = try await LocalLlamaEngine.respond(to: localMessages.filter { $0.status != "not_sent" })
+            localMessages.append(.init(id: UUID(), role: "assistant", text: answer,
+                                       status: "offline", createdAt: .now, attachments: []))
+        } catch {
+            localMessages.append(.init(id: UUID(), role: "assistant", text: error.localizedDescription,
+                                       status: "error", createdAt: .now, attachments: []))
+        }
+        persistLocalState()
     }
 
     func answer(_ answer: String, interaction: RemoteInteraction) async {
@@ -113,6 +177,12 @@ final class RemoteChatStore: ObservableObject {
         imageData = [:]
         pendingSend = nil
         isPaired = false; connected = false; error = nil
+    }
+
+    private func persistLocalState() {
+        do {
+            try LocalMobileState(offlineMode: offlineMode, messages: localMessages).save()
+        } catch { self.error = "Не удалось сохранить локальную историю: \(error.localizedDescription)" }
     }
 
     func saveImage(_ attachmentID: UUID) async throws {
@@ -189,6 +259,32 @@ final class RemoteChatStore: ObservableObject {
     private func decode(_ reply: RemoteEnvelope, requestID: UUID, code: RemotePairingCode) throws -> RemoteResponse {
         guard reply.peerID == code.pairingID, reply.requestID == requestID else { throw RemoteChatError.authentication }
         return try reply.open(RemoteResponse.self, key: code.key)
+    }
+}
+
+private struct LocalMobileState: Codable {
+    var offlineMode: Bool = false
+    var messages: [RemoteMessage] = []
+
+    private static var url: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("STIXRemote", isDirectory: true)
+            .appendingPathComponent("local-chat.json")
+    }
+
+    static func load() -> Self {
+        guard let data = try? Data(contentsOf: url),
+              let state = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
+        return state
+    }
+
+    func save() throws {
+        let file = Self.url
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try JSONEncoder().encode(self).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                                              ofItemAtPath: file.path)
     }
 }
 

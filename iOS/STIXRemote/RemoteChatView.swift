@@ -9,7 +9,10 @@ struct RemoteChatView: View {
     private var commandMatches: [RemoteCommand] {
         guard store.draft.hasPrefix("/"), !store.draft.contains("\n"), store.draft.count < 100 else { return [] }
         let search = store.draft.lowercased()
-        return (store.snapshot?.commands ?? []).filter {
+        let available = store.offlineMode ? [
+            RemoteCommand(command: "/help", title: "Локальные возможности", detail: "Что работает на iPhone")
+        ] : (store.snapshot?.commands ?? [])
+        return available.filter {
             $0.command.lowercased().hasPrefix(search) || $0.title.lowercased().contains(String(search.dropFirst()))
         }
     }
@@ -17,35 +20,58 @@ struct RemoteChatView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                deviceSelector
+                if store.offlineMode {
+                    HStack(spacing: 8) {
+                        Image(systemName: "iphone")
+                        Text("Локально на iPhone · \(LocalLlamaEngine.modelName)")
+                        Spacer()
+                    }.font(.caption).padding(12).background(.blue.opacity(0.08))
+                } else if !store.connected {
+                    Button {
+                        store.useOfflineMode()
+                    } label: {
+                        Label("Mac не в сети · работать на iPhone", systemImage: "iphone")
+                    }.font(.caption).padding(12).frame(maxWidth: .infinity)
+                }
                 if let error = store.error {
                     HStack(spacing: 8) {
                         Image(systemName: "wifi.exclamationmark")
                         Text(error).lineLimit(2)
                         Spacer()
-                        Button("Повторить") { Task { await store.refresh() } }
+                        if !store.offlineMode {
+                            Button("Повторить") { Task { await store.refresh() } }
+                        }
                     }.font(.caption).padding(12).background(.orange.opacity(0.12))
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 18) {
-                            if store.snapshot?.messages.isEmpty ?? true {
+                            if store.displayMessages.isEmpty {
                                 emptyState
                             }
-                            ForEach(store.snapshot?.messages ?? []) { message in
+                            ForEach(store.displayMessages) { message in
                                 messageView(message).id(message.id)
                             }
-                            if let interaction = store.snapshot?.interaction {
+                            if !store.offlineMode, let interaction = store.snapshot?.interaction {
                                 interactionView(interaction).id(interaction.id)
                             }
                             Color.clear.frame(height: 1).id("bottom")
                         }.padding(.horizontal, 16).padding(.vertical, 24)
                     }
-                    .onChange(of: store.snapshot?.messages.count) { _, _ in
+                    .onChange(of: store.displayMessages.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
                     }
                     .onChange(of: store.snapshot?.interaction?.id) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                 }
-                if let job = store.snapshot?.jobs.last(where: { ["running", "queued"].contains($0.status) }) {
+                if store.localWorking {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Локальная модель отвечает…", systemImage: "iphone")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ProgressView()
+                    }.padding(.horizontal, 18).padding(.vertical, 10)
+                } else if !store.offlineMode,
+                          let job = store.snapshot?.jobs.last(where: { ["running", "queued"].contains($0.status) }) {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Image(systemName: "sparkles")
@@ -86,15 +112,14 @@ struct RemoteChatView: View {
             .navigationTitle("STIX")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Image(systemName: store.connected ? "circle.fill" : "circle.dotted")
-                        .font(.system(size: 9)).foregroundStyle(store.connected ? .green : .orange)
-                        .accessibilityLabel(store.connected ? "Mac подключён" : "Mac не в сети")
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("Обновить", systemImage: "arrow.clockwise") { Task { await store.refresh() } }
-                        Button("Отключить Mac", systemImage: "iphone.slash", role: .destructive) { store.disconnect() }
+                        if store.isPaired && !store.offlineMode {
+                            Button("Обновить Mac", systemImage: "arrow.clockwise") { Task { await store.refresh() } }
+                        }
+                        if store.isPaired {
+                            Button("Отключить Mac", systemImage: "iphone.slash", role: .destructive) { store.disconnect() }
+                        }
                     } label: { Image(systemName: "ellipsis.circle") }
                 }
             }
@@ -109,11 +134,41 @@ struct RemoteChatView: View {
         }
     }
 
+    private var deviceSelector: some View {
+        HStack(spacing: 4) {
+            deviceButton("iPhone", icon: "iphone", selected: store.offlineMode) {
+                store.useOfflineMode()
+            }
+            deviceButton("MacBook", icon: "laptopcomputer", selected: !store.offlineMode) {
+                Task { await store.useMacMode() }
+            }
+        }
+        .padding(4)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .accessibilityLabel("Выбор устройства для ответа")
+    }
+
+    private func deviceButton(_ title: String, icon: String, selected: Bool,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.subheadline.weight(selected ? .semibold : .regular))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(selected ? Color(uiColor: .secondarySystemGroupedBackground) : .clear,
+                            in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 10) {
             Image(systemName: "sparkle").font(.largeTitle).padding(.bottom, 10)
             Text("Что сделаем?").font(.largeTitle.weight(.medium))
-            Text("Это один чат с вашим Mac. Попросите агента выполнить задачу или введите / для команд.")
+            Text(store.offlineMode ? "Локальная модель отвечает без Mac и интернета. Для команд и изображений выберите MacBook." : "Чат с вашим Mac. Попросите агента выполнить задачу или введите / для команд.")
                 .foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 80)
     }
@@ -121,12 +176,20 @@ struct RemoteChatView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
-                modelMenu(image: false).frame(maxWidth: .infinity)
-                modelMenu(image: true).frame(maxWidth: .infinity)
+                if store.offlineMode {
+                    Label(LocalLlamaEngine.modelName, systemImage: "iphone")
+                        .font(.caption.weight(.medium)).lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Label("Фото — через Mac", systemImage: "photo")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    modelMenu(image: false).frame(maxWidth: .infinity)
+                    modelMenu(image: true).frame(maxWidth: .infinity)
+                }
             }
-            if store.draft.hasPrefix("/image") { imagePromptMenu }
+            if !store.offlineMode && store.draft.hasPrefix("/image") { imagePromptMenu }
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("Задача, вопрос или /image…", text: $store.draft, axis: .vertical)
+                TextField(store.offlineMode ? "Вопрос для iPhone…" : "Задача, вопрос или /image…", text: $store.draft, axis: .vertical)
                     .lineLimit(1...6).focused($composerFocused).submitLabel(.send)
                     .onSubmit { Task { await store.send() } }
                     .padding(.horizontal, 14).padding(.vertical, 11)
@@ -217,6 +280,13 @@ struct RemoteChatView: View {
                     Label(attachment.name, systemImage: attachment.kind == "image" ? "photo" : "doc")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+            }
+            if message.status == "offline" {
+                Label("На iPhone", systemImage: "iphone")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else if message.status == "not_sent" {
+                Label("Не отправлено · выберите MacBook и отправьте заново", systemImage: "exclamationmark.circle")
+                    .font(.caption2).foregroundStyle(.orange)
             }
         }.frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
     }

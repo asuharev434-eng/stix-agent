@@ -41,6 +41,12 @@ struct PairingView: View {
                     Text("Оба устройства должны использовать один Apple Account для подключения через интернет.")
                         .font(.caption).foregroundStyle(.white.opacity(0.55)).multilineTextAlignment(.center)
                 }
+                Button {
+                    store.useOfflineMode()
+                } label: {
+                    Label("Работать без Mac", systemImage: "iphone")
+                        .frame(maxWidth: .infinity)
+                }.buttonStyle(.borderedProminent)
                 if let error = store.error {
                     Text(error).font(.caption).foregroundStyle(.orange).multilineTextAlignment(.center)
                     Button("Сканировать снова") { scanVersion += 1 }.foregroundStyle(.white)
