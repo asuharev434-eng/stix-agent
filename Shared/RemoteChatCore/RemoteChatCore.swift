@@ -1,6 +1,28 @@
 import Foundation
 import CryptoKit
 
+/// Public family labels are independent of stable model IDs and upstream weight providers.
+public enum STIXModelNaming {
+    private static let pattern = try? NSRegularExpression(pattern:
+        #"^STIX-A[Ii]-(0\.\d+B?)(-mobile)?(?:-(self|other))?(?:-(?:Q[2-8]|IQ[1-4])[A-Z0-9_]+)?(?:-[0-9A-Fa-f]{8})?( · .+)?$"#)
+    private static let legacySelf = Set(["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.6B"])
+
+    public static func displayName(_ name: String) -> String {
+        let fullRange = NSRange(name.startIndex..<name.endIndex, in: name)
+        guard let match = pattern?.firstMatch(in: name, range: fullRange) else { return name }
+        func field(_ index: Int) -> String {
+            guard let range = Range(match.range(at: index), in: name) else { return "" }
+            return String(name[range])
+        }
+        let version = field(1), variant = field(2)
+        let explicitOrigin = field(3)
+        let origin = explicitOrigin.isEmpty && variant.isEmpty && legacySelf.contains(version)
+            ? "self" : explicitOrigin
+        let suffix = origin.isEmpty ? "" : "-" + origin
+        return "STIX Liquid \(version)\(variant)\(suffix)\(field(4))"
+    }
+}
+
 public enum RemoteChatError: LocalizedError {
     case invalidCode, expiredCode, invalidFrame, authentication, oversized, staleRequest
 

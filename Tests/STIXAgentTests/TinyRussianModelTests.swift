@@ -21,7 +21,7 @@ final class TinyRussianModelTests: XCTestCase {
         XCTAssertEqual(record.contextLength, 128)
         let restarted = LocalModelLibrary(bundled: nil, directory: root, libraryURL: libraryURL)
         let models = try await restarted.models()
-        XCTAssertEqual(models.first?.name, "STIX-AI-0.1 · импортирована")
+        XCTAssertEqual(models.first?.name, "STIX Liquid 0.1-self · импортирована")
         let reply = try await restarted.complete(model: record.id,
             messages: [.init(role: "user", content: "Привет!")], tools: [], maxOutputTokens: 80,
             preserveContext: false, thinking: false, onPhase: { _ in }, onRequest: { _ in },

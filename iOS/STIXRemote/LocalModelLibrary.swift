@@ -27,7 +27,7 @@ enum LocalModelLibrary {
             includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? []
         for url in imports.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where url.pathExtension.lowercased() == "gguf" {
             guard let size = fileSize(url), size > 1_000_000, size <= maxBytes else { continue }
-            result.append(.init(id: url.lastPathComponent, name: url.deletingPathExtension().lastPathComponent,
+            result.append(.init(id: url.lastPathComponent, name: STIXModelNaming.displayName(url.deletingPathExtension().lastPathComponent),
                                 url: url, bytes: size, bundled: false))
         }
         return result
@@ -57,7 +57,7 @@ enum LocalModelLibrary {
             try FileManager.default.moveItem(at: temporary, to: target)
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                                                   ofItemAtPath: target.path)
-            return .init(id: target.lastPathComponent, name: name, url: target, bytes: size, bundled: false)
+            return .init(id: target.lastPathComponent, name: STIXModelNaming.displayName(name), url: target, bytes: size, bundled: false)
         } catch {
             try? FileManager.default.removeItem(at: temporary)
             throw error

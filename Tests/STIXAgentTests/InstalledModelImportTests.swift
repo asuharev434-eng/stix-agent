@@ -13,6 +13,32 @@ final class InstalledModelImportTests: XCTestCase {
         let record = try await library.importFile(URL(fileURLWithPath: source))
         XCTAssertTrue(FileManager.default.fileExists(atPath: URL(fileURLWithPath: root).appendingPathComponent("Models/" + record.fileName).path))
         XCTAssertEqual(record.sha256.count, 64)
+        if env["STIX_IMPORT_SELECT_CURRENT"] == "1" {
+            let storage = StateStorage(paths: .init(root: URL(fileURLWithPath: root)))
+            var state = try XCTUnwrap(storage.load())
+            let originalChatIDs = state.chats.map(\.id)
+            let index = try XCTUnwrap(state.chats.indices.first)
+            let selected = "builtin-text:" + record.id
+            state.chats[index].model = selected
+            state.preferences.defaultModel = selected
+            try storage.save(state)
+            let saved = try XCTUnwrap(storage.load())
+            XCTAssertEqual(saved.chats.map(\.id), originalChatIDs)
+            XCTAssertEqual(saved.chats[index].model, selected)
+            XCTAssertEqual(saved.preferences.defaultModel, selected)
+            if let oldSHA = env["STIX_IMPORT_REMOVE_REPLACED_SHA"] {
+                let records = try await library.importedModels()
+                if let old = records.first(where: { $0.sha256 == oldSHA && $0.id != record.id }) {
+                    let oldID = "builtin-text:" + old.id
+                    guard !saved.chats.contains(where: { $0.model == oldID || $0.imagePromptModel == oldID }),
+                          !(saved.preferences.modelRoles?.values.contains(oldID) ?? false),
+                          saved.preferences.defaultModel != oldID else {
+                        throw AgentError.message("Replaced model is still referenced; preserved its files")
+                    }
+                    try await library.remove(old.id)
+                }
+            }
+        }
     }
 
     func testExplicitCheckpointImportIntoAppOwnedStorage() async throws {

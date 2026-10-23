@@ -246,7 +246,7 @@ final class AppStore: ObservableObject {
                 await refreshServices()
                 setModel("builtin-text:" + record.id, image: false)
                 if let chatID = selectedID {
-                    addMessage(.init(role: "assistant", text: "Добавлена локальная модель \(record.name). Она скопирована в хранилище приложения и выбрана для этого чата."), to: chatID)
+                    addMessage(.init(role: "assistant", text: "Добавлена локальная модель \(record.displayName). Она скопирована в хранилище приложения и выбрана для этого чата."), to: chatID)
                 }
             } catch { self.error = "Импорт модели: \(error.localizedDescription)" }
         }
