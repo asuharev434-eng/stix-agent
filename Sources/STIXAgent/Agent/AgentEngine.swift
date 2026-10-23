@@ -27,9 +27,9 @@ extension AppStore {
         let incoming = attachments
         draft = ""; attachments = []
         if chats[i].folder == nil && (chats[i].messages.isEmpty || chats[i].title == "Новый чат") { chats[i].title = String((text.isEmpty ? incoming.first?.name ?? "Файлы" : text).prefix(52)) }
-        if chats[i].isClean && (text == "/image" || text.hasPrefix("/image ") || text.hasPrefix("/image\n")) {
+        if chats[i].isClean && ImageRequest.isImageCommand(text) {
             addMessage(.init(role: "user", text: text, attachments: incoming), to: id)
-            addMessage(.init(role: "assistant", text: "Чистый чат отправляет модели только сообщения этой переписки. Для /image создайте обычный чат."), to: id)
+            addMessage(.init(role: "assistant", text: "Чистый чат отправляет модели только сообщения этой переписки. Для генерации и редактирования изображений создайте обычный чат."), to: id)
             return
         }
         let previousMessageCount = chats[i].messages.count
@@ -94,7 +94,7 @@ extension AppStore {
             let text = preferences.connections.isEmpty ? "Подключений пока нет. Напишите: «Подключи API» с названием и адресом. Для ключа появится защищённая форма." : preferences.connections.map { "**\($0.name)** · \($0.baseURL)\nДокументация: `\($0.documentationPath)`" }.joined(separator: "\n\n")
             addMessage(.init(role: "assistant", text: text), to: chatID); return true
         case "/help":
-            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/mobile` — QR-код для iPhone\n`/image описание` — генерация выбранной локальной моделью\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/doctor` — сервисы, права, модели и диск\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/pause` — приостановить\n`/skip` — пропустить следующий шаг\n`/compact` — сжать контекст и сохранить переписку\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
+            addMessage(.init(role: "assistant", text: "Перетащите папку или файл и опишите задачу.\n\n`/mobile` — QR-код для iPhone\n`/image описание` — генерация выбранной локальной моделью\n`/image2image описание` — изменить прикреплённое или последнее изображение\n`/theme dark` · `/theme light` · `/theme system`\n`/models` — модели для разных задач\n`/skills` — скиллы, включая skill-creator\n`/memory` — редактируемая память\n`/search запрос` — поиск в переписке\n`/doctor` — сервисы, права, модели и диск\n`/diagnostics` — проверка локальных сервисов\n`/tasks` — показать задачи\n`/pause` — приостановить\n`/skip` — пропустить следующий шаг\n`/compact` — сжать контекст и сохранить переписку\n`/plugins` — плагины\n`/connections` — API и документация\n`/permissions` — доступ к Mac\n`/permissions reset` — отозвать постоянные разрешения\n\nНастройки и подключения можно менять обычными сообщениями. Ключи вводятся только в защищённой форме."), to: chatID); return true
         default: return false
         }
     }
@@ -284,7 +284,7 @@ extension AppStore {
     func boundedHistory(_ history: [LMMessage]) -> [LMMessage] {
         ContextSummary.bounded(history)
     }
-    func generateImage(prompt: String, chatID: UUID, attachments: [Attachment] = []) async throws {
+    func generateImage(prompt: String, chatID: UUID, attachments: [Attachment] = [], editing: Bool = false) async throws {
         guard let i = index(chatID) else { throw CancellationError() }
         if jobs.first(where: { $0.id == activeJobID })?.imageReplayBlocked == true {
             throw AgentError.message("Автоматический повтор прежней генерации заблокирован после прерывания. Проверь сохранённые изображения и очередь ComfyUI. Для новой генерации отправьте новый запрос в чат.")
@@ -303,7 +303,7 @@ extension AppStore {
             workflow = try JSONDecoder().decode(JSONValue.self, from: data)
         }
         do {
-            var request = try ImageRequest.parse("/image " + prompt, lastImagePath: lastImagePath(chatID: chatID), inputImagePath: attachments.first(where: { $0.kind == "image" })?.path)
+            var request = try ImageRequest.parse((editing ? "/image2image " : "/image ") + prompt, lastImagePath: lastImagePath(chatID: chatID), inputImagePath: attachments.first(where: { $0.kind == "image" })?.path)
             if selected.hasPrefix("builtin-image:"), request.explicitOptions.isDisjoint(with: ["size", "width", "height"]), !request.resizeOnly {
                 request.width = 512; request.height = 512
             }

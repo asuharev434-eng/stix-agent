@@ -21,6 +21,7 @@ struct RemoteChatView: View {
             RemoteCommand(command: "/help", title: "Локальные возможности", detail: "Что работает на iPhone"),
             RemoteCommand(command: "/models", title: "Модели iPhone", detail: "Выбрать или импортировать модели"),
             RemoteCommand(command: "/image", title: "Картинка на iPhone", detail: "Локальная модель изображений"),
+            RemoteCommand(command: "/image2image", title: "Изменить картинку", detail: "Прикреплённое фото или последняя картинка чата"),
             RemoteCommand(command: "/calc", title: "Калькулятор", detail: "Например, /calc (17+8)*2"),
             RemoteCommand(command: "/time", title: "Дата и время", detail: "Показать время iPhone")
         ] : (store.snapshot?.commands ?? [])
@@ -116,7 +117,7 @@ struct RemoteChatView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(commandMatches) { command in
                                 Button {
-                                    store.draft = command.command + (["/image", "/calc"].contains(command.command) || command.command.hasPrefix("/plugin/") ? " " : "")
+                                    store.draft = command.command + (["/image", "/image2image", "/calc"].contains(command.command) || command.command.hasPrefix("/plugin/") ? " " : "")
                                     if !store.draft.hasSuffix(" ") { Task { await store.send() } }
                                     composerFocused = true
                                 } label: {
@@ -247,7 +248,7 @@ struct RemoteChatView: View {
                             in: RoundedRectangle(cornerRadius: 19))
                 .padding(.bottom, 8)
             Text("Что сделаем?").font(.system(size: 32, weight: .semibold, design: .rounded))
-            Text(store.offlineMode ? "Текст и /image работают на iPhone без Mac и интернета. Для инструментов Mac выберите MacBook." : "Чат с вашим Mac. Попросите агента выполнить задачу или введите / для команд.")
+            Text(store.offlineMode ? "Текст, /image и /image2image работают на iPhone без Mac и интернета. Для инструментов Mac выберите MacBook." : "Чат с вашим Mac. Попросите агента выполнить задачу или введите / для команд.")
                 .font(.subheadline).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
@@ -313,6 +314,10 @@ struct RemoteChatView: View {
                 }
             }
             if !store.offlineMode && store.draft.hasPrefix("/image") { imagePromptMenu }
+            if store.draft.hasPrefix("/image2image") {
+                Label(store.pendingUpload?.isImage == true ? "Изменю прикреплённое фото" : "Изменю последнюю картинку чата; можно прикрепить другое фото", systemImage: "photo.on.rectangle.angled")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack(alignment: .bottom, spacing: 10) {
                 Menu {
                     Button("Файл…", systemImage: "doc") { showAttachmentImporter = true }

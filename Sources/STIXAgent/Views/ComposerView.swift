@@ -5,6 +5,7 @@ struct ComposerView: View {
     @FocusState private var focused: Bool
     @State private var slashSelection = 0
     @State private var slashDismissed = false
+    @State private var imageEditStrength = 0.65
     private var slashItems: [SlashCommandItem] {
         guard !slashDismissed, !(store.pendingHere && store.pending?.kind == .secret) else { return [] }
         return SlashCommands.matches(draft: store.draft, items: SlashCommands.items(plugins: store.preferences.plugins, canSteer: canSteer, skills: store.skills))
@@ -19,7 +20,8 @@ struct ComposerView: View {
         store.busy && store.activeJobID != nil && store.activeChatID == store.selectedID && !store.pendingHere && !imageMode
     }
     private var hasText: Bool { !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    var imageMode: Bool { store.draft.hasPrefix("/image") }
+    var imageMode: Bool { ImageRequest.isImageCommand(store.draft) }
+    private var imageEditMode: Bool { store.draft == "/image2image" || store.draft.hasPrefix("/image2image ") || store.draft.hasPrefix("/image2image\n") }
     var modelName: String {
         if imageMode {
             let id = store.currentChat?.imageModel ?? "SDXL"
@@ -51,6 +53,7 @@ struct ComposerView: View {
             attachmentsRow
             editor
             if canSteer { steeringControl }
+            if imageEditMode { imageEditControl }
             if imageMode { imagePromptModelControl }
             else if store.currentChat?.isMobile == true {
                 HStack(spacing: 8) { mobileImageModelControl; imagePromptModelControl }
@@ -99,7 +102,7 @@ struct ComposerView: View {
                             sendCorrection()
                             return .handled
                         }
-                        store.send()
+                        submit()
                         return .handled
                     }
                     .onKeyPress(.downArrow) { moveSlash(1) }
@@ -140,6 +143,24 @@ struct ComposerView: View {
             store.draft = ""
             focused = true
         }
+    }
+    private func submit() {
+        if imageEditMode && !store.draft.contains("--denoise") {
+            store.draft += " --denoise " + String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), imageEditStrength)
+        }
+        store.send()
+    }
+    private var imageEditControl: some View {
+        HStack(spacing: 10) {
+            Label(store.attachments.contains(where: { $0.kind == "image" }) ? "Прикреплённое фото" : "Последняя картинка чата или --input", systemImage: "photo.on.rectangle.angled")
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text("Изменение \(Int(imageEditStrength * 100))%")
+            Slider(value: $imageEditStrength, in: 0.2...0.95, step: 0.05)
+                .frame(width: 120)
+                .accessibilityLabel("Сила изменения картинки")
+        }.font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
+            .help("Меньшее значение сохраняет исходник точнее. Исходник: прикреплённое фото, последняя картинка чата или --input /путь.")
     }
     private var imagePromptModelControl: some View {
         HStack(spacing: 9) {
@@ -281,7 +302,7 @@ struct ComposerView: View {
                 if store.busy && !(store.pendingHere && store.pending?.kind == .question) {
                     Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: store.textSize(12))).frame(width: 34, height: 34) }.buttonStyle(.plain).background(.primary.opacity(0.09), in: Circle()).help("Остановить · ⌘.").accessibilityLabel("Остановить")
                 }
-                Button { store.send() } label: {
+                Button { submit() } label: {
                     Image(systemName: "arrow.up").font(.system(size: store.textSize(15), weight: .semibold))
                 }.buttonStyle(SendButtonStyle())
                     .disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.attachments.isEmpty)

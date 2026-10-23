@@ -182,7 +182,7 @@ final class RemoteChatStore: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if offlineMode { await sendLocally(text); return }
         guard !text.isEmpty || pendingUpload != nil, let code, !sending else { return }
-        if pendingUpload?.isImage == true,
+        if pendingUpload?.isImage == true, !text.hasPrefix("/image "), !text.hasPrefix("/image2image "),
            snapshot?.models.first(where: { $0.selected })?.supportsImagePrompt == false {
             error = "Выбранная модель принимает только короткий текст. Для анализа фото выберите другую текстовую модель MacBook; фото останется прикреплённым."
             return
@@ -240,7 +240,7 @@ final class RemoteChatStore: ObservableObject {
     private func sendLocally(_ text: String) async {
         guard !text.isEmpty || pendingUpload != nil, !sending else { return }
         let localCommands = text == "/help" || text == "/models" || text == "/time" ||
-            text.hasPrefix("/calc ") || text.hasPrefix("/image ")
+            text.hasPrefix("/calc ") || text.hasPrefix("/image ") || text.hasPrefix("/image2image ")
         if text.hasPrefix("/") && !localCommands {
             error = "Команда \(text.split(separator: " ").first.map(String.init) ?? text) доступна на MacBook. Выберите MacBook над чатом; запрос остался в поле ввода."
             return
@@ -254,7 +254,7 @@ final class RemoteChatStore: ObservableObject {
                                    status: "offline", createdAt: .now, attachments: []))
         if text == "/help" {
             localMessages.append(.init(id: UUID(), role: "assistant",
-                text: "На iPhone работают текст, /image, /calc, /time и анализ выбранного файла или фото. /models выбирает и добавляет GGUF. Для инструментов Mac выберите MacBook над чатом.",
+                text: "На iPhone работают текст, /image, /image2image, /calc, /time и анализ выбранного файла или фото. Для /image2image прикрепите фото или используйте последнюю картинку чата. /models выбирает и добавляет GGUF. Для инструментов Mac выберите MacBook над чатом.",
                 status: "offline", createdAt: .now, attachments: []))
             persistLocalState(); sending = false
             return
@@ -289,6 +289,17 @@ final class RemoteChatStore: ObservableObject {
             if text.hasPrefix("/image ") {
                 try await generateLocalImage(prompt: String(text.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines),
                                              sourceImage: upload?.isImage == true ? upload?.data : nil)
+                persistLocalState()
+                return
+            }
+            if text.hasPrefix("/image2image ") {
+                let previous = localMessages.reversed().flatMap(\.attachments).first(where: { $0.kind == "image" })
+                let source = (upload?.isImage == true ? upload?.data : nil)
+                    ?? previous.flatMap { imageData[$0.id] ?? localImagePaths[$0.id].flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) } }
+                guard let source else {
+                    throw NSError(domain: "STIXRemote", code: 8, userInfo: [NSLocalizedDescriptionKey: "Для /image2image прикрепите фото или сначала создайте картинку в этом чате."])
+                }
+                try await generateLocalImage(prompt: String(text.dropFirst(13)).trimmingCharacters(in: .whitespacesAndNewlines), sourceImage: source)
                 persistLocalState()
                 return
             }

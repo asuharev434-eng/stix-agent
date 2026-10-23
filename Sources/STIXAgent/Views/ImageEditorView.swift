@@ -212,7 +212,7 @@ enum ImageEditorCommand {
         let width = min(2048, max(256, Int((imageSize.width * scale / 8).rounded()) * 8))
         let height = min(2048, max(256, Int((imageSize.height * scale / 8).rounded()) * 8))
         let decimal = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), strength)
-        var command = "/image --input \(quote(source.path)) --size \(width)x\(height) --denoise \(decimal)"
+        var command = "/image2image --input \(quote(source.path)) --size \(width)x\(height) --denoise \(decimal)"
         if let maskPath { command += " --mask \(quote(maskPath))" }
         command += " -- \(quote(prompt.trimmingCharacters(in: .whitespacesAndNewlines)))"
         _ = try ImageRequest.parse(command)
