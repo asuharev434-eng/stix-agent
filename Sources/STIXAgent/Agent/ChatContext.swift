@@ -32,9 +32,22 @@ extension AppStore {
         }
         return ToolExposure.selected(from: allTools(), limit: contextLimit(for: chats[i]), system: system, currentRequest: currentRequest, exposed: exposedToolNames)
     }
-    func modelMessages(chatID: UUID, system: String, history: [LMMessage]) -> [LMMessage] {
-        if index(chatID).map({ chats[$0].isClean }) == true { return history }
-        return [.init(role: "system", content: system)] + history
+    func modelSupportsImages(_ model: String) -> Bool {
+        guard let descriptor = models.first(where: { $0.id == model }) else { return false }
+        if descriptor.kind == "vlm" { return true }
+        return !model.hasPrefix("builtin-text:") && !model.hasPrefix("mlx-text:") &&
+            ModelOrchestrator.inferredVision(model)
+    }
+    func modelMessages(chatID: UUID, model: String, system: String, history: [LMMessage]) -> [LMMessage] {
+        // Keep the original history intact so switching back to a vision model still works.
+        // A text-only model must not receive images left in older turns of this chat.
+        let requestHistory = modelSupportsImages(model) ? history : history.map { message in
+            var textOnly = message
+            textOnly.imageURLs = nil
+            return textOnly
+        }
+        if index(chatID).map({ chats[$0].isClean }) == true { return requestHistory }
+        return [.init(role: "system", content: system)] + requestHistory
     }
     func requestContextCompaction(chatID: UUID, announce: Bool = false) {
         guard canPersist, index(chatID) != nil else { return }

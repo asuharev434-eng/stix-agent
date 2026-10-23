@@ -446,6 +446,7 @@ final class AppStore: ObservableObject {
             if requiresComfy { selectOfflineImageFallback(builtInImages: builtInImages, localImages: localImages) }
         case .failure(let failure): if requiresComfy { error = "ComfyUI: \(failure.localizedDescription)"; selectOfflineImageFallback(builtInImages: builtInImages, localImages: localImages) }
         }
+        repairUnavailableImageSelections(builtInImages: builtInImages, localImages: localImages)
         for config in preferences.plugins where config.enabled {
             do { try await activatePlugin(config) }
             catch { self.error = "Плагин \(config.name): \(vault.redact(error.localizedDescription))" }
@@ -469,6 +470,23 @@ final class AppStore: ObservableObject {
         }
         error = "ComfyUI недоступна: обычные чаты изображений переключены на \(fallback.name). Workflow требуют ComfyUI."
         save()
+    }
+    func repairUnavailableImageSelections(builtInImages: [ModelDescriptor], localImages: [ModelDescriptor]) {
+        guard let fallback = localImages.first ?? builtInImages.first else { return }
+        let available = Set(checkpoints)
+        func unavailable(_ id: String) -> Bool {
+            !id.isEmpty && !id.hasPrefix("workflow:") && !available.contains(id)
+        }
+        var changed = false
+        if let selected = preferences.defaultImageModel, unavailable(selected) {
+            preferences.defaultImageModel = fallback.id
+            changed = true
+        }
+        for index in chats.indices where unavailable(chats[index].imageModel) {
+            chats[index].imageModel = fallback.id
+            changed = true
+        }
+        if changed { save() }
     }
     func capture<T>(_ operation: () async throws -> T) async -> Result<T, Error> { do { return .success(try await operation()) } catch { return .failure(error) } }
     func stop() {

@@ -144,7 +144,7 @@ extension AppStore {
         let prepared = try await prepareAgentAttachments(attachments)
         let attachmentText = prepared.text
         let hasImages = !prepared.imageURLs.isEmpty
-        let mainSeesImages = models.first(where: { $0.id == model })?.kind == "vlm" || preferences.modelRoles?["vision"] == model || ModelOrchestrator.inferredVision(model)
+        let mainSeesImages = modelSupportsImages(model)
         let visionNote = !clean && hasImages && !mainSeesImages ? "Изображения доступны по путям вложений. Текущая основная модель получает OCR. Если нужен визуальный анализ, вызови delegate_model с vision-моделью и image_paths; OCR не заменяет визуальный анализ." : ""
         let input = vault.redact([text, attachmentText, visionNote].filter { !$0.isEmpty }.joined(separator: "\n\n"))
         guard let current = index(chatID) else { throw CancellationError() }
@@ -182,7 +182,7 @@ extension AppStore {
                 updateTaskPhase("Подготовка контекста и модели…")
                 let history = try await preparedContext(chatID: chatID, model: model, system: prompt, tools: tools)
 
-                reply = try await textEngine.complete(model: modelRef.id, messages: modelMessages(chatID: chatID, system: prompt, history: history), tools: tools, maxOutputTokens: resourceOutputLimit, preserveContext: false, thinking: preferences.thinking ?? false, onPhase: { phase in await store.updateTaskPhase(phase) }, onRequest: { [model] finalMessages in
+                reply = try await textEngine.complete(model: modelRef.id, messages: modelMessages(chatID: chatID, model: model, system: prompt, history: history), tools: tools, maxOutputTokens: resourceOutputLimit, preserveContext: false, thinking: preferences.thinking ?? false, onPhase: { phase in await store.updateTaskPhase(phase) }, onRequest: { [model] finalMessages in
                     await store.captureContextRequest(model: model, messages: finalMessages, tools: tools, chatID: chatID)
                 }, onReasoning: { token in
                     await store.receiveReasoning(token)
