@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ApplicationServices
 import UniformTypeIdentifiers
+import RemoteChatCore
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -35,10 +36,12 @@ final class AppStore: ObservableObject {
     var transientReasoning = ""
     @Published var pending: PendingInteraction?
     @Published var error: String?
+    @Published var mobilePairing: RemotePairingCode?
     @Published var pluginTools: [String: [ToolDefinition]] = [:]
     let storage: StateStorage
     let vault = SecretVault()
     let processRunner = ProcessRunner()
+    lazy var remoteChat = RemoteChatService(store: self, root: storage.paths.root, vault: vault)
     lazy var computerTools = ComputerTools(captureDirectory: storage.paths.attachments)
     var plugins: [String: MCPClient] = [:]
     lazy var builtInTextEngine = LocalModelLibrary.live(paths: storage.paths)
@@ -57,6 +60,7 @@ final class AppStore: ObservableObject {
     var exposedToolNames: Set<String> = []
     var undos: [UUID: UndoRecord] = [:]
     var streamedText: [UUID: String] = [:]
+    var streamedPersistedAt: [UUID: Date] = [:]
     var undoing: Set<UUID> = []
     @Published var needsFeatureRelaunch = false
     @Published var featureNotice: String?
@@ -198,10 +202,22 @@ final class AppStore: ObservableObject {
         safe.text = vault.redact(safe.text)
         safe.detail = safe.detail.map(vault.redact)
         chats[i].messages.append(safe); chats[i].updatedAt = Date(); save()
+        if safe.role == "assistant", safe.status != "running", canPersist, chats[i].isMobile == true {
+            remoteChat.publishAssistantUpdate(chatID: id)
+        }
     }
     func editMessage(_ messageID: UUID, chatID: UUID, _ edit: (inout ChatMessage) -> Void) {
         guard let i = index(chatID), let j = chats[i].messages.firstIndex(where: { $0.id == messageID }) else { return }
+        let previousStatus = chats[i].messages[j].status
         edit(&chats[i].messages[j])
+        let current = chats[i].messages[j]
+        if previousStatus == "running", current.role == "assistant",
+           ["done", "error", "interrupted"].contains(current.status ?? "") {
+            streamedPersistedAt.removeValue(forKey: messageID)
+            if chats[i].isMobile == true, canPersist {
+                remoteChat.publishAssistantUpdate(chatID: chatID)
+            }
+        }
     }
     func addFiles(_ urls: [URL]) {
         for url in urls {
@@ -430,12 +446,14 @@ final class AppStore: ObservableObject {
             if requiresComfy { selectOfflineImageFallback(builtInImages: builtInImages, localImages: localImages) }
         case .failure(let failure): if requiresComfy { error = "ComfyUI: \(failure.localizedDescription)"; selectOfflineImageFallback(builtInImages: builtInImages, localImages: localImages) }
         }
+        repairUnavailableImageSelections(builtInImages: builtInImages, localImages: localImages)
         for config in preferences.plugins where config.enabled {
             do { try await activatePlugin(config) }
             catch { self.error = "Плагин \(config.name): \(vault.redact(error.localizedDescription))" }
         }
         startNextJob()
         startFeatureMonitor()
+        remoteChat.start()
     }
     private func selectOfflineImageFallback(builtInImages: [ModelDescriptor], localImages: [ModelDescriptor]) {
         guard let fallback = localImages.first ?? builtInImages.first else {
@@ -452,6 +470,23 @@ final class AppStore: ObservableObject {
         }
         error = "ComfyUI недоступна: обычные чаты изображений переключены на \(fallback.name). Workflow требуют ComfyUI."
         save()
+    }
+    func repairUnavailableImageSelections(builtInImages: [ModelDescriptor], localImages: [ModelDescriptor]) {
+        guard let fallback = localImages.first ?? builtInImages.first else { return }
+        let available = Set(checkpoints)
+        func unavailable(_ id: String) -> Bool {
+            !id.isEmpty && !id.hasPrefix("workflow:") && !available.contains(id)
+        }
+        var changed = false
+        if let selected = preferences.defaultImageModel, unavailable(selected) {
+            preferences.defaultImageModel = fallback.id
+            changed = true
+        }
+        for index in chats.indices where unavailable(chats[index].imageModel) {
+            chats[index].imageModel = fallback.id
+            changed = true
+        }
+        if changed { save() }
     }
     func capture<T>(_ operation: () async throws -> T) async -> Result<T, Error> { do { return .success(try await operation()) } catch { return .failure(error) } }
     func stop() {

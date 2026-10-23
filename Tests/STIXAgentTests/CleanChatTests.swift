@@ -14,7 +14,7 @@ final class CleanChatTests: XCTestCase {
         XCTAssertTrue(store.toolsForRequest(chatID: chatID, system: "", currentRequest: "Hello").isEmpty)
         XCTAssertEqual(store.contextWindow(chatID: chatID)?.percentage, 0)
         let user = LMMessage(role: "user", content: "Hello")
-        XCTAssertEqual(store.modelMessages(chatID: chatID, system: "", history: [user]), [user])
+        XCTAssertEqual(store.modelMessages(chatID: chatID, model: store.currentChat?.model ?? "", system: "", history: [user]), [user])
         XCTAssertEqual(AppStore(storage: store.storage).chats.first?.mode, .clean)
     }
 

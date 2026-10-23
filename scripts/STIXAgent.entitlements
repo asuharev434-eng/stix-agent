@@ -4,4 +4,8 @@
 <key>com.apple.security.device.audio-input</key><true/>
 <key>com.apple.security.personal-information.speech-recognition</key><true/>
 <key>com.apple.security.automation.apple-events</key><true/>
+<key>com.apple.developer.icloud-container-identifiers</key>
+<array><string>iCloud.studio.stix.agent</string></array>
+<key>com.apple.developer.icloud-services</key>
+<array><string>CloudKit</string></array>
 </dict></plist>

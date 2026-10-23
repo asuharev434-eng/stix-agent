@@ -7,6 +7,7 @@ final class ImageEditorTests: XCTestCase {
         let prompt = "change to blue --seed 9\nwith \"sparkles\" and \\ lines"
         let source = Attachment(path: "/tmp/my \"image\" \\ file.png", kind: "image")
         let command = try ImageEditorCommand.make(prompt: prompt, source: source, imageSize: CGSize(width: 1024, height: 768), strength: 0.55, maskPath: "/tmp/mask file.png")
+        XCTAssertTrue(command.hasPrefix("/image2image "))
         let parsed = try ImageRequest.parse(command)
         XCTAssertEqual(parsed.prompt, prompt)
         XCTAssertEqual(parsed.inputImagePath, source.path)

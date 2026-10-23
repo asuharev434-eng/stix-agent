@@ -9,6 +9,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import shutil
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -77,14 +78,18 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--variant", choices=VARIANTS, default="palettized")
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--omit-safety", action="store_true",
+                        help="Omit the optional 580 MB safety checker for memory-constrained iPhone builds")
     args = parser.parse_args()
     repository, revision = VARIANTS[args.variant]
     args.output.mkdir(parents=True, exist_ok=True)
     if args.verify_only:
         manifest = json.loads((args.output / "manifest.json").read_text(encoding="utf-8"))
+        expected_safety = not args.omit_safety
+        has_safety = "SafetyChecker.mlmodelc/weights/weight.bin" in manifest["files"]
         if (manifest["repository"] != repository or manifest["revision"] != revision or
-                len(manifest["files"]) < 25 or
-                "SafetyChecker.mlmodelc/weights/weight.bin" not in manifest["files"]):
+                len(manifest["files"]) < (20 if args.omit_safety else 25) or
+                has_safety != expected_safety):
             raise RuntimeError("Wrong Core ML model manifest")
         for relative, values in manifest["files"].items():
             if relative.startswith("/") or ".." in Path(relative).parts:
@@ -96,9 +101,13 @@ def main() -> None:
         print(f"Verified: {args.output}")
         return
     items = metadata(repository, revision)
-    if (len(items) < 25 or
+    if args.omit_safety:
+        items = [item for item in items if not item["rfilename"][len(ROOT):].startswith("SafetyChecker.mlmodelc/")]
+        shutil.rmtree(args.output / "SafetyChecker.mlmodelc", ignore_errors=True)
+    components = COMPONENTS[:-1] if args.omit_safety else COMPONENTS
+    if (len(items) < (20 if args.omit_safety else 25) or
             not all(any(component + "weights/weight.bin" in x["rfilename"] for x in items)
-                    for component in COMPONENTS)):
+                    for component in components)):
         raise RuntimeError("Incomplete Core ML component list")
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         for result in pool.map(lambda item: stage(item, args.output, repository, revision), items):

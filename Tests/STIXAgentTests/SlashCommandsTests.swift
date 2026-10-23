@@ -6,7 +6,7 @@ final class SlashCommandsTests: XCTestCase {
     func testSlashFiltersCommandsAndPluginsAndStopsAfterPromptStarts() throws {
         let items = SlashCommands.items(plugins: [plugin], canSteer: true)
         XCTAssertTrue(SlashCommands.matches(draft: "/", items: items).contains { $0.id == "models" })
-        XCTAssertEqual(SlashCommands.matches(draft: "/im", items: items).map(\.id), ["image"])
+        XCTAssertEqual(SlashCommands.matches(draft: "/im", items: items).map(\.id), ["image", "image2image"])
         XCTAssertEqual(SlashCommands.matches(draft: "/зам", items: items).last?.title, "Заметки")
         XCTAssertTrue(SlashCommands.matches(draft: "/image red mug", items: items).isEmpty)
         XCTAssertTrue(SlashCommands.matches(draft: "ordinary text", items: items).isEmpty)

@@ -6,3 +6,5 @@ dist/
 .env
 
 .signing-identity
+Vendor/iOSNative/llama.xcframework/
+iOS/STIXRemote/Models/

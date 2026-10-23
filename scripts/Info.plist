@@ -12,6 +12,10 @@
 	<string>studio.stix.agent</string>
 	<key>CFBundleName</key>
 	<string>STIX Agent</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Подключение iPhone к агенту на этом Mac.</string>
+	<key>NSBonjourServices</key>
+	<array><string>_stixagent._tcp</string></array>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

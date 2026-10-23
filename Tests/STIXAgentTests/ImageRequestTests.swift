@@ -27,6 +27,19 @@ final class ImageRequestTests: XCTestCase {
         XCTAssertThrowsError(try ImageRequest.parse("/image edit --input last"))
     }
 
+    func testSeparateImageToImageRequiresSourceAndKeepsExplicitOptions() throws {
+        XCTAssertTrue(ImageRequest.isImageCommand("/image2image make it green"))
+        XCTAssertFalse(ImageRequest.isImageCommand("/image2imagex make it green"))
+        XCTAssertThrowsError(try ImageRequest.parse("/image2image make it green"))
+        let previous = try ImageRequest.parse("/image2image make it green", lastImagePath: "/tmp/previous.png")
+        XCTAssertEqual(previous.inputImagePath, "/tmp/previous.png")
+        XCTAssertEqual(previous.denoise, 0.75)
+        let attached = try ImageRequest.parse("/image2image --denoise 0.35 make it green", lastImagePath: "/tmp/previous.png", inputImagePath: "/tmp/attached.png")
+        XCTAssertEqual(attached.inputImagePath, "/tmp/attached.png")
+        XCTAssertEqual(attached.denoise, 0.35)
+        XCTAssertEqual(attached.prompt, "make it green")
+    }
+
     func testRejectsInvalidOptionsAndBounds() {
         let options = ["--steps 0", "--steps 101", "--width 257", "--height 4096", "--size 0x1024", "--size 1024", "--size 512x512 --width 512", "--seed -1", "--seed 9007199254740992", "--cfg nan", "--cfg inf", "--cfg 31", "--denoise 0.5", "--count 0", "--count 5", "--input relative.png", "--mask /tmp/mask.png", "--steps 20 --steps 30", "--unknown yes", "--steps", "--negative 'unterminated"]
         for option in options { XCTAssertThrowsError(try ImageRequest.parse("/image fox \(option)"), option) }

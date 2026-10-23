@@ -13,6 +13,7 @@ struct SlashCommandItem: Identifiable, Equatable {
 enum SlashCommands {
     static func items(plugins: [PluginConfig], canSteer: Bool, skills: [LocalSkill] = []) -> [SlashCommandItem] {
         var items: [SlashCommandItem] = [
+            .init(id:"mobile",command:"/mobile",title:"Подключить iPhone",detail:"QR-код для одного удалённого чата",icon:"iphone.gen3"),
             .init(id:"workflows",command:"/workflows",title:"Сценарии с формами",detail:"Повторяемые задачи и параметры",icon:"slider.horizontal.3"),
             .init(id:"automations",command:"/automations",title:"Автоматизации",detail:"Расписание и наблюдение за папками",icon:"clock.arrow.circlepath"),
             .init(id:"documents",command:"/documents",title:"Поиск документов",detail:"Локальные папки и источники",icon:"doc.text.magnifyingglass"),
@@ -20,7 +21,8 @@ enum SlashCommands {
             .init(id:"resources",command:"/resources",title:"Ресурсы Mac",detail:"Память и режим экономии",icon:"gauge.with.dots.needle.33percent"),
             .init(id:"backups",command:"/backups",title:"Резервные копии и перенос",detail:"Данные приложения и защищённый перенос ключей",icon:"externaldrive"),
             .init(id: "doctor", command: "/doctor", title: "Проверить приложение", detail: "Сервисы, модели, права и место на диске", icon: "stethoscope"),
-            .init(id: "image", command: "/image", title: "Создать или изменить картинку", detail: "Описание → локальный ComfyUI", icon: "photo", takesText: true),
+            .init(id: "image", command: "/image", title: "Создать картинку", detail: "Генерация выбранной локальной моделью", icon: "photo", takesText: true),
+            .init(id: "image2image", command: "/image2image", title: "Изменить картинку", detail: "Прикрепите фото или используйте последнюю картинку чата", icon: "photo.badge.arrow.down", takesText: true),
             .init(id: "models", command: "/models", title: "Модели для задач", detail: "Назначить локальных специалистов", icon: "square.stack.3d.up"),
             .init(id: "compact", command: "/compact", title: "Сжать контекст", detail: "Сохранить рабочее резюме и освободить окно модели", icon: "arrow.down.right.and.arrow.up.left"),
             .init(id: "skills", command: "/skills", title: "Скиллы", detail: "Локальные инструкции и создание скиллов", icon: "sparkles"),

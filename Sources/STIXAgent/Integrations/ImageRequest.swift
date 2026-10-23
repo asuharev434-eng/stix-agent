@@ -3,6 +3,9 @@ import Foundation
 /// A local image request. Paths refer to local files, never remote URLs.
 struct ImageRequest: Sendable, Equatable, Codable {
     static let defaultNegativePrompt = "low quality, blurry, distorted, watermark"
+    static func isImageCommand(_ text: String) -> Bool {
+        ["/image", "/image2image"].contains { text == $0 || text.hasPrefix($0 + " ") || text.hasPrefix($0 + "\n") }
+    }
     var prompt: String
     var inputImagePath: String?
     var maskImagePath: String?
@@ -51,7 +54,8 @@ struct ImageRequest: Sendable, Equatable, Codable {
     /// Quoted values support spaces; backslashes escape quotes/backslashes inside quotes.
     static func parse(_ command: String, lastImagePath: String? = nil, inputImagePath: String? = nil, maskImagePath: String? = nil) throws -> ImageRequest {
         var tokens = try tokenize(command)
-        if tokens.first == "/image" { tokens.removeFirst() }
+        let editing = tokens.first == "/image2image"
+        if tokens.first == "/image" || editing { tokens.removeFirst() }
         var result = ImageRequest(prompt: "", inputImagePath: inputImagePath, maskImagePath: maskImagePath)
         var prompt: [String] = []
         var index = 0
@@ -114,6 +118,10 @@ struct ImageRequest: Sendable, Equatable, Codable {
             throw AgentError.message("Используйте --size или --width/--height")
         }
         result.prompt = prompt.joined(separator: " ")
+        if editing, result.inputImagePath == nil { result.inputImagePath = lastImagePath }
+        if editing, result.inputImagePath == nil {
+            throw AgentError.message("Для /image2image прикрепите фото или создайте картинку в этом чате. Можно указать --input /путь/к/файлу")
+        }
         if result.inputImagePath != nil, !result.explicitOptions.contains("denoise") { result.denoise = 0.75 }
         return try result.validated()
     }

@@ -69,10 +69,11 @@ extension AppStore {
                 } else if let recipeID = job.imageRecipeID {
                     guard !resuming else { throw AgentError.message("Автоматический повтор изображения после прерывания запрещён. Проверьте сохранённый результат и создайте новый запрос") }
                     try await self.replayImageRecipe(recipeID, variant: job.imageRecipeVariant == true, chatID: job.chatID)
-                } else if !resuming && (job.prompt == "/image" || job.prompt.hasPrefix("/image ") || job.prompt.hasPrefix("/image\n")) {
+                } else if !resuming && ImageRequest.isImageCommand(job.prompt) {
                     if let i = self.jobs.firstIndex(where: { $0.id == job.id }) { self.jobs[i].inputRecorded = true }; self.save()
                     guard self.canPersist else { throw AgentError.message("Не удалось сохранить начало генерации") }
-                    try await self.generateImage(prompt: String(job.prompt.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines), chatID: job.chatID, attachments: job.attachments)
+                    let editing = job.prompt.hasPrefix("/image2image")
+                    try await self.generateImage(prompt: String(job.prompt.dropFirst(editing ? 12 : 6)).trimmingCharacters(in: .whitespacesAndNewlines), chatID: job.chatID, attachments: job.attachments, editing: editing)
                     if self.hasPendingCorrections(chatID: job.chatID) {
                         try await self.runAgent(text: "Учти последующие уточнения к генерации изображения. Последняя готовая картинка доступна через generate_image input_image=last.", attachments: [], chatID: job.chatID)
                     }

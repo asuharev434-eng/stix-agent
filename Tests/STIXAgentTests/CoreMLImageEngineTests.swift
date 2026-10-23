@@ -6,6 +6,30 @@ import XCTest
 @testable import STIXAgent
 
 final class CoreMLImageEngineTests: XCTestCase {
+    func testWideImageIsCenterCroppedForFixedSquareModel() throws {
+        let colorSpace = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(data: nil, width: 4, height: 2, bitsPerComponent: 8,
+                                             bytesPerRow: 0, space: colorSpace,
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 4, height: 2))
+        context.setFillColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 1, y: 0, width: 2, height: 2))
+        let source = try XCTUnwrap(context.makeImage())
+        let square = try CoreMLImageEngine.squareForModel(source)
+        XCTAssertEqual(square.width, 512)
+        XCTAssertEqual(square.height, 512)
+        let image = CIImage(cgImage: square)
+        let center = try XCTUnwrap(CIContext().createCGImage(image.cropped(to: CGRect(x: 256, y: 256, width: 1, height: 1)), from: CGRect(x: 256, y: 256, width: 1, height: 1)))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let bitmap = try XCTUnwrap(CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8,
+                                             bytesPerRow: 4, space: colorSpace,
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        bitmap.draw(center, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        XCTAssertGreaterThan(pixel[1], 200)
+        XCTAssertLessThan(pixel[0], 50)
+    }
+
     func testWhiteMaskEditsAndBlackMaskPreservesOriginal() throws {
         let context = CIContext()
         let extent = CGRect(x: 0, y: 0, width: 2, height: 2)

@@ -5,6 +5,7 @@ struct ComposerView: View {
     @FocusState private var focused: Bool
     @State private var slashSelection = 0
     @State private var slashDismissed = false
+    @State private var imageEditStrength = 0.65
     private var slashItems: [SlashCommandItem] {
         guard !slashDismissed, !(store.pendingHere && store.pending?.kind == .secret) else { return [] }
         return SlashCommands.matches(draft: store.draft, items: SlashCommands.items(plugins: store.preferences.plugins, canSteer: canSteer, skills: store.skills))
@@ -19,7 +20,8 @@ struct ComposerView: View {
         store.busy && store.activeJobID != nil && store.activeChatID == store.selectedID && !store.pendingHere && !imageMode
     }
     private var hasText: Bool { !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    var imageMode: Bool { store.draft.hasPrefix("/image") }
+    var imageMode: Bool { ImageRequest.isImageCommand(store.draft) }
+    private var imageEditMode: Bool { store.draft == "/image2image" || store.draft.hasPrefix("/image2image ") || store.draft.hasPrefix("/image2image\n") }
     var modelName: String {
         if imageMode {
             let id = store.currentChat?.imageModel ?? "SDXL"
@@ -27,7 +29,9 @@ struct ComposerView: View {
                 ?? store.imageModelName(id)
         }
         let id = store.currentChat?.model ?? ""
-        return id.isEmpty ? "Выбрать модель" : store.models.first(where: { $0.id == id })?.name ?? id
+        if id.isEmpty { return "Выбрать модель" }
+        if let name = store.models.first(where: { $0.id == id })?.name { return name }
+        return store.models.isEmpty ? "Загружаю модели…" : id
     }
     var body: some View {
         composer
@@ -49,8 +53,13 @@ struct ComposerView: View {
             attachmentsRow
             editor
             if canSteer { steeringControl }
+            if imageEditMode { imageEditControl }
             if imageMode { imagePromptModelControl }
+            else if store.currentChat?.isMobile == true {
+                HStack(spacing: 8) { mobileImageModelControl; imagePromptModelControl }
+            }
             footer
+            Divider().opacity(0.55)
             HStack(spacing: 14) {
                 questionControl
                 Divider().frame(height: 14)
@@ -58,7 +67,7 @@ struct ComposerView: View {
                     .font(.system(size: store.textSize(11)))
                     .help("Показывать рассуждения модели во время ответа")
             }
-        }.padding(18).agentGlass(cornerRadius: 28)
+        }.padding(18).agentGlass(cornerRadius: 25)
             .onAppear { focused = true }
     }
     @ViewBuilder private var attachmentsRow: some View {
@@ -93,7 +102,7 @@ struct ComposerView: View {
                             sendCorrection()
                             return .handled
                         }
-                        store.send()
+                        submit()
                         return .handled
                     }
                     .onKeyPress(.downArrow) { moveSlash(1) }
@@ -135,6 +144,24 @@ struct ComposerView: View {
             focused = true
         }
     }
+    private func submit() {
+        if imageEditMode && !store.draft.contains("--denoise") {
+            store.draft += " --denoise " + String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), imageEditStrength)
+        }
+        store.send()
+    }
+    private var imageEditControl: some View {
+        HStack(spacing: 10) {
+            Label(store.attachments.contains(where: { $0.kind == "image" }) ? "Прикреплённое фото" : "Последняя картинка чата или --input", systemImage: "photo.on.rectangle.angled")
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text("Изменение \(Int(imageEditStrength * 100))%")
+            Slider(value: $imageEditStrength, in: 0.2...0.95, step: 0.05)
+                .frame(width: 120)
+                .accessibilityLabel("Сила изменения картинки")
+        }.font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
+            .help("Меньшее значение сохраняет исходник точнее. Исходник: прикреплённое фото, последняя картинка чата или --input /путь.")
+    }
     private var imagePromptModelControl: some View {
         HStack(spacing: 9) {
             Text("Текстовая модель").font(.system(size: store.textSize(11))).foregroundStyle(.secondary)
@@ -143,7 +170,7 @@ struct ComposerView: View {
                     guard let id = store.selectedID, let index = store.index(id) else { return }
                     store.chats[index].imagePromptModel = nil; store.save()
                 }
-                ForEach(store.models) { model in
+                ForEach(store.models.filter { !TinyTextPolicy.applies($0) && $0.kind != "embedding" }) { model in
                     Button(model.name) {
                         guard let id = store.selectedID, let index = store.index(id) else { return }
                         store.chats[index].imagePromptModel = model.id; store.save()
@@ -151,7 +178,7 @@ struct ComposerView: View {
                 }
                 if store.models.isEmpty { Text("Модели не найдены") }
             } label: {
-                let selected = store.currentChat?.imagePromptModel ?? store.currentChat?.model ?? ""
+                let selected = store.currentChat.flatMap { store.imagePromptModel(for: $0) } ?? ""
                 HStack(spacing: 6) {
                     Image(systemName: "text.bubble")
                     Text(selected.isEmpty ? "Выбрать модель" : store.models.first(where: { $0.id == selected })?.name ?? selected).lineLimit(1)
@@ -163,6 +190,28 @@ struct ComposerView: View {
                 .help("Локальная языковая модель переводит и адаптирует описание перед генерацией изображения")
             Spacer(minLength: 0)
         }
+    }
+    private var mobileImageModelControl: some View {
+        Menu {
+            ForEach(store.preferences.imageProfiles) { profile in
+                Button(profile.name) { store.setModel("workflow:" + profile.id, image: true) }
+            }
+            ForEach(store.checkpoints, id: \.self) { id in
+                Button(store.imageModelName(id)) { store.setModel(id, image: true) }
+            }
+            if store.checkpoints.isEmpty { Text("Модели изображений не найдены") }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "photo")
+                Text(store.imageModelName(store.currentChat?.imageModel ?? ""))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: store.textSize(8), weight: .semibold))
+            }.font(.system(size: store.textSize(12), weight: .medium))
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(.primary.opacity(0.045), in: Capsule())
+        }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 360, alignment: .leading)
+            .help("Модель изображений этого чата")
     }
     private var thinkingBinding: Binding<Bool> {
         Binding(get: { store.preferences.thinking ?? false }, set: { enabled in
@@ -253,7 +302,7 @@ struct ComposerView: View {
                 if store.busy && !(store.pendingHere && store.pending?.kind == .question) {
                     Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: store.textSize(12))).frame(width: 34, height: 34) }.buttonStyle(.plain).background(.primary.opacity(0.09), in: Circle()).help("Остановить · ⌘.").accessibilityLabel("Остановить")
                 }
-                Button { store.send() } label: {
+                Button { submit() } label: {
                     Image(systemName: "arrow.up").font(.system(size: store.textSize(15), weight: .semibold))
                 }.buttonStyle(SendButtonStyle())
                     .disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.attachments.isEmpty)

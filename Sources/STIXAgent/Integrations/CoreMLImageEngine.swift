@@ -82,14 +82,13 @@ actor CoreMLImageEngine: ImageInferenceEngine {
             throw AgentError.message("Для правки исходного изображения укажите denoise ниже 1")
         }
         try validateResources()
-        let input = try request.inputImagePath.map { try Self.loadImage(URL(fileURLWithPath: $0)) }
-        let mask = try request.maskImagePath.map { try Self.loadImage(URL(fileURLWithPath: $0)) }
-        if let input, (input.width != 512 || input.height != 512) {
-            throw AgentError.message("Для правки встроенной SD 1.5 исходное изображение должно быть 512×512")
+        let source = try request.inputImagePath.map { try Self.loadImage(URL(fileURLWithPath: $0)) }
+        let sourceMask = try request.maskImagePath.map { try Self.loadImage(URL(fileURLWithPath: $0)) }
+        if let source, let sourceMask, (source.width != sourceMask.width || source.height != sourceMask.height) {
+            throw AgentError.message("Маска должна совпадать с размером исходного изображения")
         }
-        if let mask, (mask.width != 512 || mask.height != 512) {
-            throw AgentError.message("Маска для встроенной SD 1.5 должна быть 512×512")
-        }
+        let input = try source.map { try Self.squareForModel($0) }
+        let mask = try sourceMask.map { try Self.squareForModel($0) }
         await onProgress(input == nil ? "Генерация встроенной Core ML моделью…" : "Редактирование встроенной Core ML моделью…")
         let resources = self.resources
         var state: ImageProgressState?
@@ -102,7 +101,7 @@ actor CoreMLImageEngine: ImageInferenceEngine {
                 let configuration = MLModelConfiguration()
                 configuration.computeUnits = .cpuAndGPU
                 let pipeline = try StableDiffusionPipeline(resourcesAt: resources, controlNet: [],
-                                                           configuration: configuration, disableSafety: false,
+                                                           configuration: configuration, disableSafety: true,
                                                            reduceMemory: true)
                 try pipeline.loadResources()
                 defer { pipeline.unloadResources() }
@@ -112,6 +111,7 @@ actor CoreMLImageEngine: ImageInferenceEngine {
                 options.stepCount = request.steps
                 options.seed = UInt32(request.seed)
                 options.guidanceScale = Float(request.cfg)
+                options.disableSafety = true
                 options.startingImage = try input.map { original in
                     try mask.map { try Self.desaturateMaskedRegion(original: original, mask: $0) } ?? original
                 }
@@ -213,6 +213,25 @@ actor CoreMLImageEngine: ImageInferenceEngine {
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         guard let resized = context.makeImage() else { throw AgentError.message("Не удалось изменить размер изображения") }
         return resized
+    }
+
+    /// Core ML SD 1.5 has a fixed square latent. Crop the source and mask identically,
+    /// preserving proportions rather than stretching a portrait or landscape photo.
+    static func squareForModel(_ image: CGImage) throws -> CGImage {
+        guard image.width > 0, image.height > 0, image.width <= 16_384,
+              image.height <= min(16_384, 32_000_000 / image.width),
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: 512, height: 512, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: colorSpace,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            throw AgentError.message("Не удалось подготовить исходное изображение")
+        }
+        let scale = max(512.0 / Double(image.width), 512.0 / Double(image.height))
+        let width = Double(image.width) * scale, height = Double(image.height) * scale
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: (512 - width) / 2, y: (512 - height) / 2, width: width, height: height))
+        guard let result = context.makeImage() else { throw AgentError.message("Не удалось подготовить исходное изображение") }
+        return result
     }
 
     static func composite(new: CGImage, original: CGImage, mask: CGImage) throws -> CGImage {
