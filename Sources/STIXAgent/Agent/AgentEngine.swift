@@ -304,7 +304,8 @@ extension AppStore {
         }
         do {
             var request = try ImageRequest.parse((editing ? "/image2image " : "/image ") + prompt, lastImagePath: lastImagePath(chatID: chatID), inputImagePath: attachments.first(where: { $0.kind == "image" })?.path)
-            if selected.hasPrefix("builtin-image:"), request.explicitOptions.isDisjoint(with: ["size", "width", "height"]), !request.resizeOnly {
+            if selected.hasPrefix("builtin-image:"), !request.resizeOnly,
+               (request.inputImagePath != nil || request.explicitOptions.isDisjoint(with: ["size", "width", "height"])) {
                 request.width = 512; request.height = 512
             }
             if !request.resizeOnly {
